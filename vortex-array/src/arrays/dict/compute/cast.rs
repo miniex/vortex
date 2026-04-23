@@ -53,8 +53,6 @@ mod tests {
     use vortex_session::VortexSession;
 
     use crate::IntoArray;
-    #[expect(deprecated)]
-    use crate::ToCanonical as _;
     use crate::VortexSessionExecute;
     use crate::arrays::Dict;
     use crate::arrays::PrimitiveArray;
@@ -85,8 +83,10 @@ mod tests {
             &DType::Primitive(PType::I64, Nullability::NonNullable)
         );
 
-        #[expect(deprecated)]
-        let decoded = casted.to_primitive();
+        let decoded = casted
+            .into_array()
+            .execute::<PrimitiveArray>(&mut SESSION.create_execution_ctx())
+            .unwrap();
         assert_arrays_eq!(decoded, PrimitiveArray::from_iter([1i64, 2, 3, 2, 1]));
     }
 
@@ -171,10 +171,14 @@ mod tests {
         );
 
         // Verify values are unchanged
-        #[expect(deprecated)]
-        let original_values = dict.as_array().to_primitive();
-        #[expect(deprecated)]
-        let final_values = back_to_non_nullable.to_primitive();
+        let original_values = dict
+            .into_array()
+            .execute::<PrimitiveArray>(&mut SESSION.create_execution_ctx())
+            .unwrap();
+
+        let final_values = back_to_non_nullable
+            .execute::<PrimitiveArray>(&mut SESSION.create_execution_ctx())
+            .unwrap();
         assert_arrays_eq!(original_values, final_values);
     }
 
@@ -222,8 +226,9 @@ mod tests {
             casted.dtype(),
             &DType::Primitive(PType::F64, Nullability::NonNullable)
         );
-        #[expect(deprecated)]
-        let casted_prim = casted.to_primitive();
+        let casted_prim = casted
+            .execute::<PrimitiveArray>(&mut SESSION.create_execution_ctx())
+            .unwrap();
         assert_arrays_eq!(casted_prim, PrimitiveArray::from_iter([1.0f64, 3.0, 1.0]));
     }
 }
