@@ -12,6 +12,7 @@ use crate::LayoutEncodingRef;
 use crate::layouts::chunked::ChunkedLayoutEncoding;
 use crate::layouts::dict::DictLayoutEncoding;
 use crate::layouts::flat::FlatLayoutEncoding;
+use crate::layouts::list::ListLayoutEncoding;
 use crate::layouts::struct_::StructLayoutEncoding;
 use crate::layouts::zoned::ZonedLayoutEncoding;
 
@@ -52,6 +53,7 @@ impl Default for LayoutSession {
         layouts.register(StructLayoutEncoding.id(), StructLayoutEncoding.as_ref());
         layouts.register(ZonedLayoutEncoding.id(), ZonedLayoutEncoding.as_ref());
         layouts.register(DictLayoutEncoding.id(), DictLayoutEncoding.as_ref());
+        layouts.register(ListLayoutEncoding.id(), ListLayoutEncoding.as_ref());
 
         Self { registry: layouts }
     }
