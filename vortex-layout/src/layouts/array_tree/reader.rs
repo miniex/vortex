@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright the Vortex contributors
 
-use std::collections::BTreeSet;
 use std::ops::BitAnd;
 use std::ops::Range;
 use std::sync::Arc;
@@ -24,6 +23,7 @@ use crate::layouts::SharedArrayFuture;
 use crate::layouts::array_tree::ArrayTreesSource;
 use crate::layouts::array_tree::flat::ArrayTreeFlatLayout;
 use crate::reader::ArrayFuture;
+use crate::reader::RowSplits;
 use crate::reader::SplitRange;
 use crate::segments::SegmentSource;
 
@@ -62,7 +62,7 @@ impl LayoutReader for ArrayTreeReader {
         &self,
         field_mask: &[FieldMask],
         split_range: &SplitRange,
-        splits: &mut BTreeSet<u64>,
+        splits: &mut RowSplits,
     ) -> VortexResult<()> {
         self.data_reader
             .register_splits(field_mask, split_range, splits)
@@ -178,10 +178,10 @@ impl LayoutReader for ArrayTreeFlatReader {
         &self,
         _field_mask: &[FieldMask],
         split_range: &SplitRange,
-        splits: &mut BTreeSet<u64>,
+        splits: &mut RowSplits,
     ) -> VortexResult<()> {
         split_range.check_bounds(self.layout.inner().row_count())?;
-        splits.insert(split_range.root_row_range().end);
+        splits.push(split_range.root_row_range().end);
         Ok(())
     }
 

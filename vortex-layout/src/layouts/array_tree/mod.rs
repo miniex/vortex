@@ -14,6 +14,7 @@ mod reader;
 pub mod writer;
 
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::sync::OnceLock;
 
 use futures::FutureExt;
@@ -47,6 +48,7 @@ use vortex_error::vortex_bail;
 use vortex_error::vortex_err;
 use vortex_error::vortex_panic;
 use vortex_session::VortexSession;
+use vortex_session::registry::Id;
 use vortex_session::registry::ReadContext;
 use vortex_utils::aliases::hash_map::HashMap;
 
@@ -68,6 +70,17 @@ use crate::segments::SegmentSource;
 use crate::vtable;
 
 vtable!(ArrayTree);
+
+/// Well-known [`LayoutReaderContext`] key under which [`ArrayTreeLayout::derive_reader_ctx`]
+/// publishes its [`ArrayTreesSource`].
+///
+/// Both the publisher (parent [`ArrayTreeLayout`]) and the consumer
+/// ([`ArrayTreeFlatLayout`]'s `new_reader`) hardcode this id, so no metadata persistence is
+/// needed to bind them. Two stacked `ArrayTreeLayouts` both publish under this id; the
+/// inner one overrides the outer in the descendant's view — exactly the "nearest ancestor
+/// wins" semantic each `ArrayTreeFlat` leaf wants.
+pub static ARRAY_TREES_SOURCE_ID: LazyLock<Id> =
+    LazyLock::new(|| Id::new_static("vortex.array_tree.source"));
 
 /// Encoding marker for [`ArrayTreeLayout`].
 #[derive(Debug)]
@@ -134,8 +147,9 @@ impl ArrayTreeLayout {
     }
 
     /// Derive a [`LayoutReaderContext`] that publishes an [`ArrayTreesSource`] backed by this
-    /// layout's auxiliary `array_trees` child. Descendant [`ArrayTreeFlatLayout`] readers
-    /// pull the source via `ctx.get::<ArrayTreesSource>()` to resolve their compact trees.
+    /// layout's auxiliary `array_trees` child under [`ARRAY_TREES_SOURCE_ID`]. Descendant
+    /// [`ArrayTreeFlatLayout`] readers pull the source by the same id to resolve their
+    /// compact trees.
     ///
     /// Used by:
     /// - The normal [`crate::VTable::new_reader`] dispatch on `ArrayTreeLayout` (production path).
@@ -158,7 +172,7 @@ impl ArrayTreeLayout {
             ctx,
         )?;
         let source = Arc::new(ArrayTreesSource::new(trees_reader, session.clone()));
-        Ok(ctx.with(source))
+        Ok(ctx.with(*ARRAY_TREES_SOURCE_ID, source))
     }
 }
 
@@ -259,8 +273,8 @@ impl VTable for ArrayTree {
 /// the cached map.
 ///
 /// Published by [`ArrayTreeLayout::derive_reader_ctx`] into the [`LayoutReaderContext`]
-/// passed to descendants; pulled by [`ArrayTreeFlatLayout`]'s reader via
-/// `ctx.get::<ArrayTreesSource>()`.
+/// passed to descendants under [`ARRAY_TREES_SOURCE_ID`]; pulled by
+/// [`ArrayTreeFlatLayout`]'s reader by the same id.
 pub struct ArrayTreesSource {
     reader: LayoutReaderRef,
     /// Session used to create execution contexts when canonicalizing the consolidated array

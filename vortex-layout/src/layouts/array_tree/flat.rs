@@ -21,6 +21,7 @@ use crate::LayoutReaderRef;
 use crate::LayoutRef;
 use crate::VTable;
 use crate::children::LayoutChildren;
+use crate::layouts::array_tree::ARRAY_TREES_SOURCE_ID;
 use crate::layouts::array_tree::ArrayTreesSource;
 use crate::layouts::array_tree::reader::ArrayTreeFlatReader;
 use crate::layouts::flat::FlatLayout;
@@ -131,14 +132,16 @@ impl VTable for ArrayTreeFlat {
         session: &VortexSession,
         ctx: &LayoutReaderContext,
     ) -> VortexResult<LayoutReaderRef> {
-        let source = ctx.get::<ArrayTreesSource>().ok_or_else(|| {
-            vortex_error::vortex_err!(
-                "ArrayTreeFlatLayout requires an ancestor ArrayTreeLayout to publish an \
+        let source = ctx
+            .get::<ArrayTreesSource>(*ARRAY_TREES_SOURCE_ID)
+            .ok_or_else(|| {
+                vortex_error::vortex_err!(
+                    "ArrayTreeFlatLayout requires an ancestor ArrayTreeLayout to publish an \
                  ArrayTreesSource into the reader context; call \
                  ArrayTreeLayout::derive_reader_ctx on each ArrayTreeLayout ancestor before \
                  constructing a reader for this layout"
-            )
-        })?;
+                )
+            })?;
         Ok(Arc::new(ArrayTreeFlatReader::new(
             layout.clone(),
             name,
