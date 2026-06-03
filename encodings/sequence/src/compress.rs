@@ -170,8 +170,6 @@ fn sequence_parts_typed<P: NativePType + Into<PValue> + CheckedAdd + CheckedSub>
 
 #[cfg(test)]
 mod tests {
-    #[expect(unused_imports)]
-    use itertools::Itertools;
     use vortex_array::LEGACY_SESSION;
     use vortex_array::VortexSessionExecute;
     use vortex_array::arrays::PrimitiveArray;
