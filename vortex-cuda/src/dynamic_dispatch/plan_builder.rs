@@ -12,6 +12,7 @@ use itertools::zip_eq;
 use tracing::trace;
 use vortex::array::ArrayRef;
 use vortex::array::ArrayVTable;
+use vortex::array::ParentRef;
 use vortex::array::arrays::Dict;
 use vortex::array::arrays::Primitive;
 use vortex::array::arrays::ScalarFn;
@@ -545,7 +546,8 @@ impl FusedPlan {
         let slice_arr = array.as_::<Slice>();
         let child = slice_arr.child().clone();
 
-        if let Some(reduced) = child.reduce_parent(&array, 0)? {
+        let parent_ref = ParentRef::from_array_ref(&array);
+        if let Some(reduced) = child.reduce_parent(&parent_ref, 0)? {
             return self.walk(reduced, pending_subtrees);
         }
 

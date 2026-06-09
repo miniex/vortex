@@ -1,16 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright the Vortex contributors
 
-use vortex_error::VortexExpect;
 use vortex_error::VortexResult;
 
 use crate::ArrayRef;
 use crate::ExecutionCtx;
 use crate::array::ArrayView;
 use crate::array::VTable;
-use crate::arrays::ScalarFn;
 use crate::arrays::scalar_fn::ExactScalarFn;
-use crate::arrays::scalar_fn::ScalarFnArrayExt;
+use crate::arrays::scalar_fn::ParentScalarFnArrayView;
 use crate::arrays::scalar_fn::ScalarFnArrayView;
 use crate::kernel::ExecuteParentKernel;
 use crate::optimizer::rules::ArrayParentReduceRule;
@@ -59,17 +57,14 @@ where
     fn reduce_parent(
         &self,
         array: ArrayView<'_, V>,
-        parent: ScalarFnArrayView<'_, ListContainsExpr>,
+        parent: ParentScalarFnArrayView<'_, ListContainsExpr>,
         child_idx: usize,
     ) -> VortexResult<Option<ArrayRef>> {
         // Only process the element/needle child (index 1), not the list child (index 0).
         if child_idx != 1 {
             return Ok(None);
         }
-        let scalar_fn_array = parent
-            .as_opt::<ScalarFn>()
-            .vortex_expect("ExactScalarFn matcher confirmed ScalarFnArray");
-        let list = scalar_fn_array.get_child(0);
+        let list = parent.get_child(0);
         <V as ListContainsElementReduce>::list_contains(list, array)
     }
 }
@@ -95,10 +90,7 @@ where
         if child_idx != 1 {
             return Ok(None);
         }
-        let scalar_fn_array = parent
-            .as_opt::<ScalarFn>()
-            .vortex_expect("ExactScalarFn matcher confirmed ScalarFnArray");
-        let list = scalar_fn_array.get_child(0);
+        let list = parent.get_child(0);
         <V as ListContainsElementKernel>::list_contains(list, array, ctx)
     }
 }

@@ -42,6 +42,7 @@ pub mod traversal;
 pub use analysis::*;
 pub use expression::*;
 pub use exprs::*;
+pub use optimize::ExpressionReduceNode;
 pub use pruning::StatsCatalog;
 
 pub trait VortexExprExt {

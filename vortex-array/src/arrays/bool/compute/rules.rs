@@ -6,11 +6,13 @@ use vortex_error::VortexResult;
 use crate::ArrayRef;
 use crate::IntoArray;
 use crate::array::ArrayView;
+use crate::array::ParentView;
 use crate::arrays::Bool;
 use crate::arrays::BoolArray;
 use crate::arrays::Masked;
 use crate::arrays::bool::BoolArrayExt;
 use crate::arrays::filter::FilterReduceAdaptor;
+use crate::arrays::masked::MaskedArrayExt;
 use crate::arrays::slice::SliceReduceAdaptor;
 use crate::optimizer::rules::ArrayParentReduceRule;
 use crate::optimizer::rules::ParentRuleSet;
@@ -38,7 +40,7 @@ impl ArrayParentReduceRule<Bool> for BoolMaskedValidityRule {
     fn reduce_parent(
         &self,
         array: ArrayView<'_, Bool>,
-        parent: ArrayView<'_, Masked>,
+        parent: ParentView<'_, Masked>,
         child_idx: usize,
     ) -> VortexResult<Option<ArrayRef>> {
         if child_idx > 0 {
@@ -50,7 +52,7 @@ impl ArrayParentReduceRule<Bool> for BoolMaskedValidityRule {
         Ok(Some(
             BoolArray::new(
                 array.to_bit_buffer(),
-                array.validity()?.and(parent.validity()?)?,
+                array.validity()?.and(parent.masked_validity())?,
             )
             .into_array(),
         ))

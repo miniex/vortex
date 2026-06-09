@@ -18,6 +18,8 @@ use crate::Executable;
 use crate::ExecutionCtx;
 use crate::IntoArray;
 use crate::array::ArrayView;
+use crate::array::ParentRef;
+use crate::array::ParentView;
 use crate::array::child_to_validity;
 use crate::arrays::Bool;
 use crate::arrays::BoolArray;
@@ -1032,6 +1034,19 @@ pub enum CanonicalView<'a> {
     Variant(ArrayView<'a, Variant>),
 }
 
+pub enum ParentCanonicalView<'a> {
+    Null(ParentView<'a, Null>),
+    Bool(ParentView<'a, Bool>),
+    Primitive(ParentView<'a, Primitive>),
+    Decimal(ParentView<'a, Decimal>),
+    VarBinView(ParentView<'a, VarBinView>),
+    List(ParentView<'a, ListView>),
+    FixedSizeList(ParentView<'a, FixedSizeList>),
+    Struct(ParentView<'a, Struct>),
+    Extension(ParentView<'a, Extension>),
+    Variant(ParentView<'a, Variant>),
+}
+
 impl From<CanonicalView<'_>> for Canonical {
     fn from(value: CanonicalView<'_>) -> Self {
         match value {
@@ -1070,10 +1085,15 @@ impl CanonicalView<'_> {
 /// A matcher for any canonical array type.
 pub struct AnyCanonical;
 impl Matcher for AnyCanonical {
-    type Match<'a> = CanonicalView<'a>;
+    type RefMatch<'a> = CanonicalView<'a>;
+    type ParentMatch<'a> = ParentCanonicalView<'a>;
 
+    /// Fast encoding-id check that skips [`ParentRef`] construction. This is the
+    /// hot path for [`ArrayRef::is_canonical`](crate::ArrayRef::is_canonical), so
+    /// each canonical encoding is checked via the cheap `ArrayRef::is::<V>()`
+    /// direct downcast.
     #[inline]
-    fn matches(array: &ArrayRef) -> bool {
+    fn matches_ref(array: &ArrayRef) -> bool {
         array.is::<Null>()
             || array.is::<Bool>()
             || array.is::<Primitive>()
@@ -1086,8 +1106,10 @@ impl Matcher for AnyCanonical {
             || array.is::<Extension>()
     }
 
+    /// Direct heap-array downcasts; mirrors [`Self::try_match`] but skips the
+    /// [`ParentRef`] construction that would otherwise wrap each call.
     #[inline]
-    fn try_match(array: &ArrayRef) -> Option<Self::Match<'_>> {
+    fn try_match_ref(array: &ArrayRef) -> Option<Self::RefMatch<'_>> {
         if let Some(a) = array.as_opt::<Null>() {
             Some(CanonicalView::Null(a))
         } else if let Some(a) = array.as_opt::<Bool>() {
@@ -1108,6 +1130,45 @@ impl Matcher for AnyCanonical {
             Some(CanonicalView::Variant(a))
         } else {
             array.as_opt::<Extension>().map(CanonicalView::Extension)
+        }
+    }
+
+    fn matches(parent: &ParentRef<'_>) -> bool {
+        parent.is::<Null>()
+            || parent.is::<Bool>()
+            || parent.is::<Primitive>()
+            || parent.is::<Decimal>()
+            || parent.is::<Struct>()
+            || parent.is::<ListView>()
+            || parent.is::<FixedSizeList>()
+            || parent.is::<VarBinView>()
+            || parent.is::<Variant>()
+            || parent.is::<Extension>()
+    }
+
+    fn try_match<'a>(parent: &'a ParentRef<'_>) -> Option<Self::ParentMatch<'a>> {
+        if let Some(a) = parent.as_opt::<Null>() {
+            Some(ParentCanonicalView::Null(a))
+        } else if let Some(a) = parent.as_opt::<Bool>() {
+            Some(ParentCanonicalView::Bool(a))
+        } else if let Some(a) = parent.as_opt::<Primitive>() {
+            Some(ParentCanonicalView::Primitive(a))
+        } else if let Some(a) = parent.as_opt::<Decimal>() {
+            Some(ParentCanonicalView::Decimal(a))
+        } else if let Some(a) = parent.as_opt::<Struct>() {
+            Some(ParentCanonicalView::Struct(a))
+        } else if let Some(a) = parent.as_opt::<ListView>() {
+            Some(ParentCanonicalView::List(a))
+        } else if let Some(a) = parent.as_opt::<FixedSizeList>() {
+            Some(ParentCanonicalView::FixedSizeList(a))
+        } else if let Some(a) = parent.as_opt::<VarBinView>() {
+            Some(ParentCanonicalView::VarBinView(a))
+        } else if let Some(a) = parent.as_opt::<Variant>() {
+            Some(ParentCanonicalView::Variant(a))
+        } else {
+            parent
+                .as_opt::<Extension>()
+                .map(ParentCanonicalView::Extension)
         }
     }
 }

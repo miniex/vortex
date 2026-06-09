@@ -31,16 +31,8 @@ impl Display for ScalarFnData {
 
 impl ScalarFnData {
     /// Create a new ScalarFnArray from a scalar function and its children.
-    pub fn build(
-        scalar_fn: ScalarFnRef,
-        children: Vec<ArrayRef>,
-        len: usize,
-    ) -> VortexResult<Self> {
-        vortex_ensure!(
-            children.iter().all(|c| c.len() == len),
-            "ScalarFnArray must have children equal to the array length"
-        );
-        Ok(Self { scalar_fn })
+    fn build(scalar_fn: ScalarFnRef) -> Self {
+        Self { scalar_fn }
     }
 
     /// Get the scalar function bound to this array.
@@ -56,13 +48,13 @@ pub trait ScalarFnArrayExt: TypedArrayRef<ScalarFn> {
     }
 
     fn child_at(&self, idx: usize) -> &ArrayRef {
-        self.as_ref().slots()[idx]
+        self.slots()[idx]
             .as_ref()
             .vortex_expect("ScalarFnArray child slot")
     }
 
     fn child_count(&self) -> usize {
-        self.as_ref().slots().len()
+        self.slots().len()
     }
 
     fn nchildren(&self) -> usize {
@@ -90,15 +82,30 @@ impl Array<ScalarFn> {
         children: Vec<ArrayRef>,
         len: usize,
     ) -> VortexResult<Self> {
+        Ok(unsafe { Array::from_parts_unchecked(Self::try_new_parts(scalar_fn, children, len)?) })
+    }
+
+    /// Build the [`ArrayParts`] for a ScalarFnArray without materializing it.
+    ///
+    /// Mirrors [`try_new`](Self::try_new) but stops short of allocating the backing
+    /// `ArrayRef`, so callers can drive the parts through [`ArrayParts::optimize`] and
+    /// only pay the wrapper allocation when no reduction fires.
+    #[inline]
+    pub fn try_new_parts(
+        scalar_fn: ScalarFnRef,
+        children: Vec<ArrayRef>,
+        len: usize,
+    ) -> VortexResult<ArrayParts<ScalarFn>> {
+        vortex_ensure!(
+            children.iter().all(|c| c.len() == len),
+            "ScalarFnArray must have children equal to the array length"
+        );
         let arg_dtypes: Vec<_> = children.iter().map(|c| c.dtype().clone()).collect();
         let dtype = scalar_fn.return_dtype(&arg_dtypes)?;
-        let data = ScalarFnData::build(scalar_fn.clone(), children.clone(), len)?;
-        let vtable = ScalarFn { id: scalar_fn.id() };
-        Ok(unsafe {
-            Array::from_parts_unchecked(
-                ArrayParts::new(vtable, dtype, len, data)
-                    .with_slots(children.into_iter().map(Some).collect::<ArraySlots>()),
-            )
-        })
+        let id = scalar_fn.id();
+        let data = ScalarFnData::build(scalar_fn);
+        let vtable = ScalarFn { id };
+        Ok(ArrayParts::new(vtable, dtype, len, data)
+            .with_slots(children.into_iter().map(Some).collect::<ArraySlots>()))
     }
 }

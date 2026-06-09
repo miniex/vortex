@@ -8,7 +8,7 @@ use crate::ExecutionCtx;
 use crate::array::ArrayView;
 use crate::array::VTable;
 use crate::arrays::scalar_fn::ExactScalarFn;
-use crate::arrays::scalar_fn::ScalarFnArrayView;
+use crate::arrays::scalar_fn::ParentScalarFnArrayView;
 use crate::dtype::DType;
 use crate::kernel::ExecuteParentKernel;
 use crate::matcher::Matcher;
@@ -53,7 +53,7 @@ where
     fn reduce_parent(
         &self,
         array: ArrayView<'_, V>,
-        parent: ScalarFnArrayView<'_, Cast>,
+        parent: ParentScalarFnArrayView<'_, Cast>,
         _child_idx: usize,
     ) -> VortexResult<Option<ArrayRef>> {
         let dtype = parent.options;
@@ -77,7 +77,7 @@ where
     fn execute_parent(
         &self,
         array: ArrayView<'_, V>,
-        parent: <Self::Parent as Matcher>::Match<'_>,
+        parent: <Self::Parent as Matcher>::RefMatch<'_>,
         _child_idx: usize,
         ctx: &mut ExecutionCtx,
     ) -> VortexResult<Option<ArrayRef>> {

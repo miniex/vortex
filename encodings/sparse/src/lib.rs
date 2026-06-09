@@ -23,6 +23,7 @@ use vortex_array::EqMode;
 use vortex_array::ExecutionCtx;
 use vortex_array::ExecutionResult;
 use vortex_array::IntoArray;
+use vortex_array::ParentRef;
 use vortex_array::arrays::BoolArray;
 use vortex_array::arrays::ConstantArray;
 use vortex_array::arrays::Primitive;
@@ -140,13 +141,13 @@ impl SparseOwnedExt for Array<Sparse> {
         let patches = Patches::new(
             self.len(),
             self.patches().offset(),
-            self.as_ref().slots()[SparseSlots::PATCH_INDICES]
+            self.slots()[SparseSlots::PATCH_INDICES]
                 .clone()
                 .vortex_expect("indices"),
-            self.as_ref().slots()[SparseSlots::PATCH_VALUES]
+            self.slots()[SparseSlots::PATCH_VALUES]
                 .clone()
                 .vortex_expect("values"),
-            self.as_ref().slots()[SparseSlots::PATCH_CHUNK_OFFSETS].clone(),
+            self.slots()[SparseSlots::PATCH_CHUNK_OFFSETS].clone(),
         )?;
         Ok(SparseParts {
             patches,
@@ -288,7 +289,7 @@ impl VTable for Sparse {
 
     fn reduce_parent(
         array: ArrayView<'_, Self>,
-        parent: &ArrayRef,
+        parent: &ParentRef<'_>,
         child_idx: usize,
     ) -> VortexResult<Option<ArrayRef>> {
         RULES.evaluate(array, parent, child_idx)

@@ -20,6 +20,7 @@ use vortex_array::ExecutionCtx;
 use vortex_array::ExecutionResult;
 use vortex_array::IntoArray;
 use vortex_array::LEGACY_SESSION;
+use vortex_array::ParentRef;
 use vortex_array::TypedArrayRef;
 use vortex_array::VortexSessionExecute;
 use vortex_array::arrays::Primitive;
@@ -166,7 +167,7 @@ impl VTable for RunEnd {
 
     fn reduce_parent(
         array: ArrayView<'_, Self>,
-        parent: &ArrayRef,
+        parent: &ParentRef<'_>,
         child_idx: usize,
     ) -> VortexResult<Option<ArrayRef>> {
         RULES.evaluate(array, parent, child_idx)
@@ -216,13 +217,13 @@ pub trait RunEndArrayExt: TypedArrayRef<RunEnd> {
     }
 
     fn ends(&self) -> &ArrayRef {
-        self.as_ref().slots()[ENDS_SLOT]
+        self.slots()[ENDS_SLOT]
             .as_ref()
             .vortex_expect("RunEndArray ends slot")
     }
 
     fn values(&self) -> &ArrayRef {
-        self.as_ref().slots()[VALUES_SLOT]
+        self.slots()[VALUES_SLOT]
             .as_ref()
             .vortex_expect("RunEndArray values slot")
     }

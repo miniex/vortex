@@ -23,6 +23,7 @@ use vortex_array::ExecutionCtx;
 use vortex_array::ExecutionResult;
 use vortex_array::IntoArray;
 use vortex_array::LEGACY_SESSION;
+use vortex_array::ParentRef;
 use vortex_array::TypedArrayRef;
 use vortex_array::VortexSessionExecute;
 use vortex_array::arrays::Primitive;
@@ -302,7 +303,7 @@ impl VTable for ALPRD {
 
     fn reduce_parent(
         array: ArrayView<'_, Self>,
-        parent: &ArrayRef,
+        parent: &ParentRef<'_>,
         child_idx: usize,
     ) -> VortexResult<Option<ArrayRef>> {
         RULES.evaluate(array, parent, child_idx)
@@ -578,11 +579,11 @@ fn validate_parts(
 
 pub trait ALPRDArrayExt: TypedArrayRef<ALPRD> {
     fn left_parts(&self) -> &ArrayRef {
-        left_parts_from_slots(self.as_ref().slots())
+        left_parts_from_slots(self.slots())
     }
 
     fn right_parts(&self) -> &ArrayRef {
-        right_parts_from_slots(self.as_ref().slots())
+        right_parts_from_slots(self.slots())
     }
 
     fn right_bit_width(&self) -> u8 {
@@ -590,11 +591,7 @@ pub trait ALPRDArrayExt: TypedArrayRef<ALPRD> {
     }
 
     fn left_parts_patches(&self) -> Option<Patches> {
-        patches_from_slots(
-            self.as_ref().slots(),
-            self.patches_data.as_ref(),
-            self.as_ref().len(),
-        )
+        patches_from_slots(self.slots(), self.patches_data.as_ref(), self.len())
     }
 
     fn left_parts_dictionary(&self) -> &Buffer<u16> {

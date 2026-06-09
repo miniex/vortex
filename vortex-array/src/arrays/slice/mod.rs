@@ -87,7 +87,7 @@ where
     fn reduce_parent(
         &self,
         array: ArrayView<'_, V>,
-        parent: <Self::Parent as Matcher>::Match<'_>,
+        parent: <Self::Parent as Matcher>::ParentMatch<'_>,
         child_idx: usize,
     ) -> VortexResult<Option<ArrayRef>> {
         assert_eq!(child_idx, 0);
@@ -111,7 +111,7 @@ where
     fn execute_parent(
         &self,
         array: ArrayView<'_, V>,
-        parent: <Self::Parent as Matcher>::Match<'_>,
+        parent: <Self::Parent as Matcher>::RefMatch<'_>,
         child_idx: usize,
         ctx: &mut ExecutionCtx,
     ) -> VortexResult<Option<ArrayRef>> {

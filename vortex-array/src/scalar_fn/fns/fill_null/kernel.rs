@@ -12,9 +12,8 @@ use crate::array::ArrayView;
 use crate::array::VTable;
 use crate::arrays::Constant;
 use crate::arrays::ConstantArray;
-use crate::arrays::ScalarFn;
 use crate::arrays::scalar_fn::ExactScalarFn;
-use crate::arrays::scalar_fn::ScalarFnArrayExt;
+use crate::arrays::scalar_fn::ParentScalarFnArrayView;
 use crate::arrays::scalar_fn::ScalarFnArrayView;
 use crate::builtins::ArrayBuiltins;
 use crate::kernel::ExecuteParentKernel;
@@ -115,17 +114,14 @@ where
     fn reduce_parent(
         &self,
         array: ArrayView<'_, V>,
-        parent: ScalarFnArrayView<'_, FillNullExpr>,
+        parent: ParentScalarFnArrayView<'_, FillNullExpr>,
         child_idx: usize,
     ) -> VortexResult<Option<ArrayRef>> {
         // Only process the input child (index 0), not the fill_value child (index 1).
         if child_idx != 0 {
             return Ok(None);
         }
-        let scalar_fn_array = parent
-            .as_opt::<ScalarFn>()
-            .vortex_expect("ExactScalarFn matcher confirmed ScalarFnArray");
-        let fill_value = scalar_fn_array
+        let fill_value = parent
             .get_child(1)
             .as_constant()
             .vortex_expect("fill_null fill_value must be constant");
@@ -158,10 +154,7 @@ where
         if child_idx != 0 {
             return Ok(None);
         }
-        let scalar_fn_array = parent
-            .as_opt::<ScalarFn>()
-            .vortex_expect("ExactScalarFn matcher confirmed ScalarFnArray");
-        let fill_value = scalar_fn_array
+        let fill_value = parent
             .get_child(1)
             .as_constant()
             .vortex_expect("fill_null fill_value must be constant");

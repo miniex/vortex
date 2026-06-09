@@ -21,6 +21,7 @@ use crate::AnyCanonical;
 use crate::Array;
 use crate::ArrayEq;
 use crate::ArrayHash;
+use crate::ArraySlots;
 use crate::ArrayView;
 use crate::Canonical;
 use crate::ExecutionCtx;
@@ -33,17 +34,13 @@ use crate::aggregate_fn::fns::sum::sum;
 use crate::array::ArrayData;
 use crate::array::ArrayId;
 use crate::array::ArrayInner;
-use crate::array::ArraySlots;
 use crate::array::DynArrayData;
-use crate::arrays::Bool;
+use crate::array::ParentRef;
+use crate::array::ParentView;
 use crate::arrays::Constant;
 use crate::arrays::DictArray;
 use crate::arrays::FilterArray;
-use crate::arrays::Null;
-use crate::arrays::Primitive;
 use crate::arrays::SliceArray;
-use crate::arrays::VarBin;
-use crate::arrays::VarBinView;
 use crate::buffer::BufferHandle;
 use crate::builders::ArrayBuilder;
 use crate::dtype::DType;
@@ -52,7 +49,6 @@ use crate::expr::stats::Precision;
 use crate::expr::stats::Stat;
 use crate::expr::stats::StatsProviderExt;
 use crate::matcher::Matcher;
-use crate::optimizer::ArrayOptimizer;
 use crate::scalar::Scalar;
 use crate::stats::StatsSetRef;
 use crate::validity::Validity;
@@ -92,6 +88,11 @@ impl ArrayRef {
     #[inline(always)]
     pub(crate) fn dyn_array(&self) -> &dyn DynArrayData {
         &self.0.data
+    }
+
+    #[inline(always)]
+    pub(crate) fn inner(&self) -> &ArrayInner<dyn DynArrayData> {
+        &self.0
     }
 
     /// Returns a mutable reference to the inner if this is the sole owner.
@@ -228,9 +229,8 @@ impl ArrayRef {
             return Ok(Canonical::empty(self.dtype()).into_array());
         }
 
-        let sliced = SliceArray::try_new(self.clone(), range)?
-            .into_array()
-            .optimize()?;
+        let sliced = SliceArray::try_new_parts(self.clone(), range)?;
+        let sliced = sliced.optimize()?;
 
         // Propagate some stats from the original array to the sliced array.
         if !sliced.is::<Constant>() {
@@ -255,16 +255,14 @@ impl ArrayRef {
 
     /// Wraps the array in a [`FilterArray`] such that it is logically filtered by the given mask.
     pub fn filter(&self, mask: Mask) -> VortexResult<ArrayRef> {
-        FilterArray::try_new(self.clone(), mask)?
-            .into_array()
-            .optimize()
+        let parts = FilterArray::try_new_parts(self.clone(), mask)?;
+        parts.optimize()
     }
 
     /// Wraps the array in a [`DictArray`] such that it is logically taken by the given indices.
     pub fn take(&self, indices: ArrayRef) -> VortexResult<ArrayRef> {
-        DictArray::try_new(indices, self.clone())?
-            .into_array()
-            .optimize()
+        let parts = DictArray::try_new_parts(indices, self.clone())?;
+        parts.optimize()
     }
 
     /// Fetch the scalar at the given index.
@@ -392,19 +390,23 @@ impl ArrayRef {
     /// Does the array match the given matcher.
     #[inline]
     pub fn is<M: Matcher>(&self) -> bool {
-        M::matches(self)
+        M::matches_ref(self)
     }
 
     /// Returns the array downcast by the given matcher.
     #[inline]
-    pub fn as_<M: Matcher>(&self) -> M::Match<'_> {
+    pub fn as_<M: Matcher>(&self) -> M::RefMatch<'_> {
         self.as_opt::<M>().vortex_expect("Failed to downcast")
     }
 
     /// Returns the array downcast by the given matcher.
+    ///
+    /// Routes through the heap-array entry points (`Matcher::matches_ref` /
+    /// `Matcher::try_match_ref`) so matchers with a cheap, direct downcast — like
+    /// the blanket `VTable` matcher — don't pay for a [`ParentRef`] construction here.
     #[inline]
-    pub fn as_opt<M: Matcher>(&self) -> Option<M::Match<'_>> {
-        M::try_match(self)
+    pub fn as_opt<M: Matcher>(&self) -> Option<M::RefMatch<'_>> {
+        M::try_match_ref(self)
     }
 
     /// Returns the array downcast to the given `Array<V>` as an owned typed handle.
@@ -442,15 +444,6 @@ impl ArrayRef {
             }
         }
         nbytes
-    }
-
-    /// Returns whether this array is an arrow encoding.
-    pub fn is_arrow(&self) -> bool {
-        self.is::<Null>()
-            || self.is::<Bool>()
-            || self.is::<Primitive>()
-            || self.is::<VarBin>()
-            || self.is::<VarBinView>()
     }
 
     /// Whether the array is of a canonical encoding.
@@ -598,7 +591,7 @@ impl ArrayRef {
 
     pub fn reduce_parent(
         &self,
-        parent: &ArrayRef,
+        parent: &ParentRef<'_>,
         child_idx: usize,
     ) -> VortexResult<Option<ArrayRef>> {
         self.0.data.reduce_parent(self, parent, child_idx)
@@ -648,7 +641,7 @@ impl ArrayRef {
     }
 
     /// Returns the nth child of the array without allocating a Vec.
-    pub fn nth_child(&self, idx: usize) -> Option<ArrayRef> {
+    pub fn nth_child(&self, idx: usize) -> Option<&ArrayRef> {
         self.0.data.nth_child(self, idx)
     }
 
@@ -739,17 +732,37 @@ impl IntoArray for ArrayRef {
 }
 
 impl<V: VTable> Matcher for V {
-    type Match<'a> = ArrayView<'a, V>;
+    type RefMatch<'a> = ArrayView<'a, V>;
+    type ParentMatch<'a> = ParentView<'a, V>;
 
+    /// Match by encoding id (no materialization). Equivalent to
+    /// [`Matcher::try_match`].is_some() but avoids constructing an
+    /// [`ArrayView`] for parents that do not need one.
+    fn matches(parent: &ParentRef<'_>) -> bool {
+        parent.is_encoding::<V>()
+    }
+
+    /// Returns an [`ArrayView`] for the parent if its encoding is `V`.
+    ///
+    /// The returned [`ArrayView`] is stack-backed when the parent is stack-backed,
+    /// so no `Arc<ArrayInner<_>>` is allocated until a downstream consumer reaches
+    /// for [`ArrayView::array`].
+    fn try_match<'a>(parent: &'a ParentRef<'_>) -> Option<Self::ParentMatch<'a>> {
+        parent.as_parent_view::<V>()
+    }
+
+    /// Fast encoding-id check that skips [`ParentRef`] construction. The hot
+    /// `ArrayRef::is::<V>()` path goes through here, so any extra work shows up in
+    /// downstream micro-benchmarks (`patches_lookup`, `chunk_array_builder`, ...).
     #[inline]
-    fn matches(array: &ArrayRef) -> bool {
+    fn matches_ref(array: &ArrayRef) -> bool {
         array.0.data.as_any().is::<ArrayData<V>>()
     }
 
+    /// Direct downcast — same fast path as [`Matcher::matches_ref`] but also produces
+    /// the [`ArrayView`] when it matches.
     #[inline]
-    fn try_match(array: &'_ ArrayRef) -> Option<ArrayView<'_, V>> {
-        let inner = array.0.data.as_any().downcast_ref::<ArrayData<V>>()?;
-        // # Safety checked by `downcast_ref`.
-        Some(unsafe { ArrayView::new_unchecked(array, &inner.data) })
+    fn try_match_ref(array: &ArrayRef) -> Option<Self::RefMatch<'_>> {
+        array.as_typed::<V>()
     }
 }

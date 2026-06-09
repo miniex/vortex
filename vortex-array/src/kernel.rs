@@ -94,7 +94,7 @@ pub trait ExecuteParentKernel<V: VTable>: Debug + Send + Sync + 'static {
     fn execute_parent(
         &self,
         array: ArrayView<'_, V>,
-        parent: <Self::Parent as Matcher>::Match<'_>,
+        parent: <Self::Parent as Matcher>::RefMatch<'_>,
         child_idx: usize,
         ctx: &mut ExecutionCtx,
     ) -> VortexResult<Option<ArrayRef>>;
@@ -134,7 +134,7 @@ impl<V: VTable, K: ExecuteParentKernel<V>> Debug for ParentKernelAdapter<V, K> {
 
 impl<V: VTable, K: ExecuteParentKernel<V>> DynParentKernel<V> for ParentKernelAdapter<V, K> {
     fn matches(&self, parent: &ArrayRef) -> bool {
-        K::Parent::matches(parent)
+        parent.is::<K::Parent>()
     }
 
     fn execute_parent(
@@ -144,7 +144,7 @@ impl<V: VTable, K: ExecuteParentKernel<V>> DynParentKernel<V> for ParentKernelAd
         child_idx: usize,
         ctx: &mut ExecutionCtx,
     ) -> VortexResult<Option<ArrayRef>> {
-        let Some(parent_view) = K::Parent::try_match(parent) else {
+        let Some(parent_view) = parent.as_opt::<K::Parent>() else {
             return Ok(None);
         };
         self.kernel

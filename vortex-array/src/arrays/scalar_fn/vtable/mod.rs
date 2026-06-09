@@ -10,6 +10,7 @@ use std::marker::PhantomData;
 use std::ops::Deref;
 
 use itertools::Itertools;
+use vortex_error::VortexExpect;
 use vortex_error::VortexResult;
 use vortex_error::vortex_bail;
 use vortex_error::vortex_ensure;
@@ -20,13 +21,14 @@ use vortex_session::registry::CachedId;
 use crate::ArrayEq;
 use crate::ArrayHash;
 use crate::ArrayRef;
-use crate::ArraySlots;
 use crate::EqMode;
-use crate::IntoArray;
 use crate::array::Array;
 use crate::array::ArrayId;
 use crate::array::ArrayParts;
 use crate::array::ArrayView;
+use crate::array::ParentRef;
+use crate::array::ParentView;
+use crate::array::TypedArrayRef;
 use crate::array::VTable;
 use crate::arrays::scalar_fn::array::ScalarFnArrayExt;
 use crate::arrays::scalar_fn::array::ScalarFnData;
@@ -154,13 +156,13 @@ impl VTable for ScalarFn {
             .map(ExecutionResult::done)
     }
 
-    fn reduce(array: ArrayView<'_, Self>) -> VortexResult<Option<ArrayRef>> {
+    fn reduce(array: ParentView<'_, Self>) -> VortexResult<Option<ArrayRef>> {
         RULES.evaluate(array)
     }
 
     fn reduce_parent(
         array: ArrayView<'_, Self>,
-        parent: &ArrayRef,
+        parent: &ParentRef<'_>,
         child_idx: usize,
     ) -> VortexResult<Option<ArrayRef>> {
         PARENT_RULES.evaluate(array, parent, child_idx)
@@ -169,34 +171,34 @@ impl VTable for ScalarFn {
 
 /// Array factory functions for scalar functions.
 pub trait ScalarFnFactoryExt: scalar_fn::ScalarFnVTable {
+    /// Build the [`ArrayParts<ScalarFn>`] for this scalar function applied to `children`.
+    ///
+    /// Stops short of allocating the backing `ArrayRef`, so callers can drive the parts
+    /// through [`ArrayParts::optimize`] and only pay the wrapper allocation when no
+    /// reduction fires.
+    #[inline]
+    fn try_new_array_parts(
+        &self,
+        len: usize,
+        options: Self::Options,
+        children: impl Into<Vec<ArrayRef>>,
+    ) -> VortexResult<ArrayParts<ScalarFn>> {
+        let scalar_fn = scalar_fn::TypedScalarFnInstance::new(self.clone(), options).erased();
+        Array::<ScalarFn>::try_new_parts(scalar_fn, children.into(), len)
+    }
+
+    /// Build a materialized scalar-function array for this scalar function applied to
+    /// `children`. Equivalent to [`try_new_array_parts`](Self::try_new_array_parts) followed
+    /// by [`ArrayParts::into_array`].
     fn try_new_array(
         &self,
         len: usize,
         options: Self::Options,
         children: impl Into<Vec<ArrayRef>>,
     ) -> VortexResult<ArrayRef> {
-        let scalar_fn = scalar_fn::TypedScalarFnInstance::new(self.clone(), options).erased();
-
-        let children = children.into();
-        vortex_ensure!(
-            children.iter().all(|c| c.len() == len),
-            "All child arrays must have the same length as the scalar function array"
-        );
-
-        let child_dtypes = children.iter().map(|c| c.dtype().clone()).collect_vec();
-        let dtype = scalar_fn.return_dtype(&child_dtypes)?;
-
-        let data = ScalarFnData {
-            scalar_fn: scalar_fn.clone(),
-        };
-        let vtable = ScalarFn { id: scalar_fn.id() };
-        Ok(unsafe {
-            Array::from_parts_unchecked(
-                ArrayParts::new(vtable, dtype, len, data)
-                    .with_slots(children.into_iter().map(Some).collect::<ArraySlots>()),
-            )
-        }
-        .into_array())
+        Ok(self
+            .try_new_array_parts(len, options, children)?
+            .into_array())
     }
 }
 impl<V: scalar_fn::ScalarFnVTable> ScalarFnFactoryExt for V {}
@@ -205,14 +207,15 @@ impl<V: scalar_fn::ScalarFnVTable> ScalarFnFactoryExt for V {}
 #[derive(Debug)]
 pub struct AnyScalarFn;
 impl Matcher for AnyScalarFn {
-    type Match<'a> = ArrayView<'a, ScalarFn>;
+    type RefMatch<'a> = ArrayView<'a, ScalarFn>;
+    type ParentMatch<'a> = ParentView<'a, ScalarFn>;
 
-    fn matches(array: &ArrayRef) -> bool {
-        array.is::<ScalarFn>()
+    fn try_match<'a>(parent: &'a ParentRef<'_>) -> Option<Self::ParentMatch<'a>> {
+        parent.as_opt::<ScalarFn>()
     }
 
-    fn try_match(array: &ArrayRef) -> Option<Self::Match<'_>> {
-        array.as_opt::<ScalarFn>()
+    fn try_match_ref(array: &ArrayRef) -> Option<Self::RefMatch<'_>> {
+        array.as_typed::<ScalarFn>()
     }
 }
 
@@ -220,40 +223,140 @@ impl Matcher for AnyScalarFn {
 #[derive(Debug, Default)]
 pub struct ExactScalarFn<F: scalar_fn::ScalarFnVTable>(PhantomData<F>);
 
-impl<F: scalar_fn::ScalarFnVTable> Matcher for ExactScalarFn<F> {
-    type Match<'a> = ScalarFnArrayView<'a, F>;
-
-    fn matches(array: &ArrayRef) -> bool {
-        if let Some(scalar_fn_array) = array.as_opt::<ScalarFn>() {
-            scalar_fn_array.data().scalar_fn().is::<F>()
-        } else {
-            false
-        }
+impl<F: scalar_fn::ScalarFnVTable> ExactScalarFn<F> {
+    #[inline]
+    fn from_ref_view(view: ArrayView<'_, ScalarFn>) -> Option<ScalarFnArrayView<'_, F>> {
+        let scalar_fn = view.data().scalar_fn().downcast_ref::<F>()?;
+        Some(ScalarFnArrayView {
+            view,
+            vtable: scalar_fn.vtable(),
+            options: scalar_fn.options(),
+        })
     }
 
-    fn try_match(array: &ArrayRef) -> Option<Self::Match<'_>> {
-        let scalar_fn_array = array.as_opt::<ScalarFn>()?;
-        let scalar_fn_data = scalar_fn_array.data();
-        let scalar_fn = scalar_fn_data.scalar_fn().downcast_ref::<F>()?;
+    #[inline]
+    fn from_parent_view(
+        view: ParentView<'_, ScalarFn>,
+    ) -> Option<ScalarFnArrayView<'_, F, ParentView<'_, ScalarFn>>> {
+        let scalar_fn = view.data().scalar_fn().downcast_ref::<F>()?;
         Some(ScalarFnArrayView {
-            array,
+            view,
             vtable: scalar_fn.vtable(),
             options: scalar_fn.options(),
         })
     }
 }
 
-pub struct ScalarFnArrayView<'a, F: scalar_fn::ScalarFnVTable> {
-    array: &'a ArrayRef,
+impl<F: scalar_fn::ScalarFnVTable> Matcher for ExactScalarFn<F> {
+    type RefMatch<'a> = ScalarFnArrayView<'a, F>;
+    type ParentMatch<'a> = ScalarFnArrayView<'a, F, ParentView<'a, ScalarFn>>;
+
+    /// Skip the `ArrayView` + `ScalarFnArrayView` construction that the default
+    /// `try_match(...).is_some()` would do. Two cheap downcasts suffice: encoding
+    /// id, then scalar function id.
+    fn matches(parent: &ParentRef<'_>) -> bool {
+        parent
+            .typed_data::<ScalarFn>()
+            .is_some_and(|data| data.scalar_fn().is::<F>())
+    }
+
+    fn try_match<'a>(parent: &'a ParentRef<'_>) -> Option<Self::ParentMatch<'a>> {
+        Self::from_parent_view(parent.as_opt::<ScalarFn>()?)
+    }
+
+    /// Heap-side mirror of [`Self::matches`], same reasoning.
+    fn matches_ref(array: &ArrayRef) -> bool {
+        array
+            .as_typed::<ScalarFn>()
+            .is_some_and(|view| view.data().scalar_fn().is::<F>())
+    }
+
+    fn try_match_ref(array: &ArrayRef) -> Option<Self::RefMatch<'_>> {
+        Self::from_ref_view(array.as_typed::<ScalarFn>()?)
+    }
+}
+
+/// A typed view over a [`ScalarFn`] array exposing the concrete `F`-typed `vtable`
+/// and `options`.
+///
+/// Wraps either a heap [`ArrayView<'_, ScalarFn>`] or parent [`ParentView<'_, ScalarFn>`].
+/// Parent-backed views do not expose implicit `ArrayRef` access; callers must explicitly
+/// materialize the underlying parent view if they need an owned array.
+pub struct ScalarFnArrayView<
+    'a,
+    F: scalar_fn::ScalarFnVTable,
+    V: TypedArrayRef<ScalarFn> + Copy = ArrayView<'a, ScalarFn>,
+> {
+    view: V,
     pub vtable: &'a F,
     pub options: &'a F::Options,
 }
 
-impl<F: scalar_fn::ScalarFnVTable> Deref for ScalarFnArrayView<'_, F> {
-    type Target = ArrayRef;
+pub type ParentScalarFnArrayView<'a, F> = ScalarFnArrayView<'a, F, ParentView<'a, ScalarFn>>;
 
-    fn deref(&self) -> &Self::Target {
-        self.array
+impl<'a, F: scalar_fn::ScalarFnVTable, V: TypedArrayRef<ScalarFn> + Copy>
+    ScalarFnArrayView<'a, F, V>
+{
+    /// Returns the underlying [`ScalarFn`]-typed array view.
+    #[inline]
+    pub fn view(&self) -> V {
+        self.view
+    }
+
+    /// Returns the child array at the given slot.
+    ///
+    /// Reads from `slots()` directly without forcing stack-backed parents to
+    /// materialize.
+    pub fn child_at(&self, idx: usize) -> &ArrayRef {
+        self.view.slots()[idx]
+            .as_ref()
+            .vortex_expect("ScalarFnArray child slot")
+    }
+
+    /// Alias for [`Self::child_at`].
+    #[inline]
+    pub fn get_child(&self, idx: usize) -> &ArrayRef {
+        self.child_at(idx)
+    }
+
+    /// Returns the number of child slots.
+    #[inline]
+    pub fn child_count(&self) -> usize {
+        self.view.slots().len()
+    }
+
+    /// Iterates over the array's children.
+    pub fn iter_children(&self) -> impl Iterator<Item = &ArrayRef> + '_ {
+        (0..self.child_count()).map(|idx| self.child_at(idx))
+    }
+
+    /// Collects the children into a `Vec` of cloned `ArrayRef`s.
+    pub fn children(&self) -> Vec<ArrayRef> {
+        self.iter_children().cloned().collect()
+    }
+}
+
+impl<F: scalar_fn::ScalarFnVTable, V: TypedArrayRef<ScalarFn> + Copy> Copy
+    for ScalarFnArrayView<'_, F, V>
+{
+}
+
+impl<F: scalar_fn::ScalarFnVTable, V: TypedArrayRef<ScalarFn> + Copy> Clone
+    for ScalarFnArrayView<'_, F, V>
+{
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<'a, F: scalar_fn::ScalarFnVTable, V: TypedArrayRef<ScalarFn> + Copy> Deref
+    for ScalarFnArrayView<'a, F, V>
+{
+    type Target = V;
+
+    #[inline]
+    fn deref(&self) -> &V {
+        &self.view
     }
 }
 

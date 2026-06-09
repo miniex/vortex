@@ -363,9 +363,7 @@ impl InnerProduct {
         let new_constant = Vector::constant_array(&rotated_query, len)?;
 
         // Extract the SorfTransform child (the already-padded Vector<padded_dim, f32>).
-        let sorf_child = sorf_view
-            .nth_child(0)
-            .vortex_expect("SorfTransform must have exactly one child");
+        let sorf_child = sorf_view.get_child(0).clone();
 
         // Recursively execute the rewritten inner product. This allows case 2 to fire on
         // the rewritten tree if the sorf child is `Vector[FSL(Dict)]`. Termination is

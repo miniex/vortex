@@ -16,6 +16,7 @@ use crate::Canonical;
 use crate::ExecutionCtx;
 use crate::IntoArray;
 use crate::array::ArrayView;
+use crate::array::ParentView;
 use crate::array::VTable;
 use crate::arrays::Filter;
 use crate::arrays::dict::TakeExecuteAdaptor;
@@ -95,7 +96,7 @@ where
     fn reduce_parent(
         &self,
         array: ArrayView<'_, V>,
-        parent: ArrayView<'_, Filter>,
+        parent: ParentView<'_, Filter>,
         child_idx: usize,
     ) -> VortexResult<Option<ArrayRef>> {
         assert_eq!(child_idx, 0);
@@ -119,7 +120,7 @@ where
     fn execute_parent(
         &self,
         array: ArrayView<'_, V>,
-        parent: <Self::Parent as Matcher>::Match<'_>,
+        parent: <Self::Parent as Matcher>::RefMatch<'_>,
         child_idx: usize,
         ctx: &mut ExecutionCtx,
     ) -> VortexResult<Option<ArrayRef>> {
@@ -128,5 +129,28 @@ where
             return Ok(Some(result));
         }
         <V as FilterKernel>::filter(array, parent.filter_mask(), ctx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use vortex_error::VortexResult;
+    use vortex_mask::Mask;
+
+    use crate::IntoArray;
+    use crate::arrays::Constant;
+    use crate::arrays::ConstantArray;
+    use crate::arrays::FilterArray;
+
+    #[test]
+    fn reduce_adaptor_handles_stack_backed_filter_parent() -> VortexResult<()> {
+        let child = ConstantArray::new(7i32, 4).into_array();
+        let parts = FilterArray::try_new_parts(child, Mask::from_iter([true, false, true, false]))?;
+
+        let reduced = parts.optimize()?;
+
+        assert!(reduced.is::<Constant>());
+        assert_eq!(reduced.len(), 2);
+        Ok(())
     }
 }
