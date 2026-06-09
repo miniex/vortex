@@ -554,7 +554,7 @@ impl FusedPlan {
         // BitPacked with patches does not reduce through Slice. Slice the
         // packed buffer here, and defer patch slicing to CUDA materialization.
         if child.encoding_id() == BitPacked.id() {
-            let bp = child.as_::<BitPacked>();
+            let bp = child.as_::<BitPacked>().materialize_view();
             let offset = slice_arr.data().slice_range().start;
             let len = array.len();
             let (packed, bitpacked_offset, patch_range) = bitpacked_slice_view(bp, offset, len)?;

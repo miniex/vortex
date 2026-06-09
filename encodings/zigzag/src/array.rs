@@ -303,7 +303,7 @@ mod test {
         );
 
         let sliced = zigzag.slice(0..2)?;
-        let sliced = sliced.as_::<ZigZag>();
+        let sliced = sliced.as_::<ZigZag>().materialize_view();
         assert_eq!(
             sliced.array().execute_scalar(sliced.len() - 1, &mut ctx,)?,
             Scalar::from(-5i32)

@@ -8,7 +8,6 @@ use crate::ExecutionCtx;
 use crate::array::ArrayView;
 use crate::array::VTable;
 use crate::arrays::scalar_fn::ExactScalarFn;
-use crate::arrays::scalar_fn::ParentScalarFnArrayView;
 use crate::arrays::scalar_fn::ScalarFnArrayView;
 use crate::kernel::ExecuteParentKernel;
 use crate::optimizer::rules::ArrayParentReduceRule;
@@ -59,7 +58,7 @@ where
     fn reduce_parent(
         &self,
         array: ArrayView<'_, V>,
-        parent: ParentScalarFnArrayView<'_, ZipExpr>,
+        parent: ScalarFnArrayView<'_, ZipExpr>,
         child_idx: usize,
     ) -> VortexResult<Option<ArrayRef>> {
         if child_idx != 0 {

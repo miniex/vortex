@@ -183,7 +183,7 @@ fn rejects_invalid_bit_width(#[case] bit_width: u8) {
         .child_at(0)
         .clone();
     let normalized_ext = normalized
-        .as_opt::<Extension>()
+        .as_typed::<Extension>()
         .expect("normalized child should be Extension");
     assert!(unsafe { turboquant_encode_unchecked(normalized_ext, &config, &mut ctx) }.is_err());
 }

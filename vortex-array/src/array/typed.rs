@@ -430,6 +430,14 @@ impl<V: VTable> Array<V> {
         unsafe { ArrayView::new_unchecked(&self.inner, &inner.data) }
     }
 
+    /// Returns a [`ParentView`] borrowing this array's data, for APIs that accept
+    /// both heap- and stack-backed parents.
+    pub fn as_parent_view(&self) -> ParentView<'_, V> {
+        let inner = self.downcast_inner();
+        // SAFETY: `inner.data` is the `V::TypedArrayData` stored inside `self.inner`.
+        unsafe { ParentView::new_unchecked(&self.inner, &inner.data) }
+    }
+
     /// Downcast the inner `ArrayRef` to `&ArrayData<V>`.
     #[inline(always)]
     fn downcast_inner(&self) -> &ArrayData<V> {

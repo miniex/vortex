@@ -187,7 +187,7 @@ pub(crate) fn logical_shredded_from_parquet_typed_value(
         .into_array());
     }
 
-    let Some(struct_array) = typed_value.as_opt::<Struct>() else {
+    let Some(struct_array) = typed_value.as_typed::<Struct>() else {
         return Ok(typed_value);
     };
 
@@ -226,7 +226,7 @@ fn logical_shredded_from_parquet_field(
     field: ArrayRef,
     ctx: &mut ExecutionCtx,
 ) -> VortexResult<Option<ArrayRef>> {
-    let Some(field_struct) = field.as_opt::<Struct>() else {
+    let Some(field_struct) = field.as_typed::<Struct>() else {
         return Ok(Some(field));
     };
 

@@ -11,12 +11,11 @@ use crate::CanonicalView;
 use crate::Executable;
 use crate::ExecutionCtx;
 use crate::IntoArray;
-use crate::array::ArrayView;
-use crate::array::ParentRef;
 use crate::array::ParentView;
 use crate::arrays::Constant;
 use crate::arrays::ConstantArray;
 use crate::dtype::DType;
+use crate::matcher::AsParent;
 use crate::matcher::Matcher;
 use crate::scalar::Scalar;
 
@@ -88,47 +87,25 @@ impl Executable for Columnar {
 
 pub enum ColumnarView<'a> {
     Canonical(CanonicalView<'a>),
-    Constant(ArrayView<'a, Constant>),
-}
-
-pub enum ParentColumnarView<'a> {
-    Canonical(crate::ParentCanonicalView<'a>),
     Constant(ParentView<'a, Constant>),
 }
 
 pub struct AnyColumnar;
 impl Matcher for AnyColumnar {
-    type RefMatch<'a> = ColumnarView<'a>;
-    type ParentMatch<'a> = ParentColumnarView<'a>;
+    type Match<'a> = ColumnarView<'a>;
 
-    fn matches(parent: &ParentRef<'_>) -> bool {
+    /// Fast encoding-id checks. Mirror of
+    /// [`AnyCanonical::matches`](crate::AnyCanonical) for the same reason.
+    #[inline]
+    fn matches<P: AsParent>(parent: &P) -> bool {
         parent.is::<Constant>() || parent.is::<AnyCanonical>()
     }
 
-    fn try_match<'a>(parent: &'a ParentRef<'_>) -> Option<Self::ParentMatch<'a>> {
+    fn try_match<'a, P: AsParent>(parent: &'a P) -> Option<Self::Match<'a>> {
         if let Some(constant) = parent.as_opt::<Constant>() {
-            Some(ParentColumnarView::Constant(constant))
-        } else {
-            parent
-                .as_opt::<AnyCanonical>()
-                .map(ParentColumnarView::Canonical)
-        }
-    }
-
-    /// Fast encoding-id check that skips [`ParentRef`] construction. Mirror of
-    /// [`AnyCanonical::matches_ref`](crate::AnyCanonical::matches_ref) for the same reason.
-    #[inline]
-    fn matches_ref(array: &ArrayRef) -> bool {
-        array.is::<Constant>() || array.is::<AnyCanonical>()
-    }
-
-    /// Direct heap-array downcasts; skips the [`ParentRef`] construction that the
-    /// default [`Self::try_match`] would otherwise do.
-    fn try_match_ref(array: &ArrayRef) -> Option<Self::RefMatch<'_>> {
-        if let Some(constant) = array.as_opt::<Constant>() {
             Some(ColumnarView::Constant(constant))
         } else {
-            array.as_opt::<AnyCanonical>().map(ColumnarView::Canonical)
+            parent.as_opt::<AnyCanonical>().map(ColumnarView::Canonical)
         }
     }
 }

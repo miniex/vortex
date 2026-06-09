@@ -13,7 +13,7 @@ use crate::arrays::Struct;
 use crate::arrays::StructArray;
 use crate::arrays::dict::TakeReduceAdaptor;
 use crate::arrays::scalar_fn::ExactScalarFn;
-use crate::arrays::scalar_fn::ParentScalarFnArrayView;
+use crate::arrays::scalar_fn::ScalarFnArrayView;
 use crate::arrays::slice::SliceReduceAdaptor;
 use crate::arrays::struct_::StructArrayExt;
 use crate::arrays::struct_::compute::cast::struct_cast_fields;
@@ -38,7 +38,7 @@ pub(crate) fn struct_cast_reduce_parent(
     parent: &ParentRef<'_>,
     _child_idx: usize,
 ) -> VortexResult<Option<ArrayRef>> {
-    let Some(array) = child.as_opt::<Struct>() else {
+    let Some(array) = child.as_typed::<Struct>() else {
         return Ok(None);
     };
     let Some(parent) = parent.as_opt::<ExactScalarFn<Cast>>() else {
@@ -54,7 +54,7 @@ pub(crate) fn struct_cast_reduce_parent(
 
 fn reduce_struct_cast(
     array: ArrayView<'_, Struct>,
-    parent: ParentScalarFnArrayView<'_, Cast>,
+    parent: ScalarFnArrayView<'_, Cast>,
 ) -> VortexResult<Option<ArrayRef>> {
     let Some(target_fields) = parent.options.as_struct_fields_opt() else {
         return Ok(None);
@@ -87,7 +87,7 @@ impl ArrayParentReduceRule<Struct> for StructGetItemRule {
     fn reduce_parent(
         &self,
         child: ArrayView<'_, Struct>,
-        parent: ParentScalarFnArrayView<'_, GetItem>,
+        parent: ScalarFnArrayView<'_, GetItem>,
         _child_idx: usize,
     ) -> VortexResult<Option<ArrayRef>> {
         let field_name = parent.options;

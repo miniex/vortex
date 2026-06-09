@@ -8,7 +8,6 @@ use crate::ExecutionCtx;
 use crate::array::ArrayView;
 use crate::array::VTable;
 use crate::arrays::scalar_fn::ExactScalarFn;
-use crate::arrays::scalar_fn::ParentScalarFnArrayView;
 use crate::arrays::scalar_fn::ScalarFnArrayView;
 use crate::kernel::ExecuteParentKernel;
 use crate::optimizer::rules::ArrayParentReduceRule;
@@ -57,7 +56,7 @@ where
     fn reduce_parent(
         &self,
         array: ArrayView<'_, V>,
-        parent: ParentScalarFnArrayView<'_, ListContainsExpr>,
+        parent: ScalarFnArrayView<'_, ListContainsExpr>,
         child_idx: usize,
     ) -> VortexResult<Option<ArrayRef>> {
         // Only process the element/needle child (index 1), not the list child (index 0).

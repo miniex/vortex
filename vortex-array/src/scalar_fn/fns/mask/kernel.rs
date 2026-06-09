@@ -9,7 +9,6 @@ use crate::array::ArrayView;
 use crate::array::VTable;
 use crate::arrays::Bool;
 use crate::arrays::scalar_fn::ExactScalarFn;
-use crate::arrays::scalar_fn::ParentScalarFnArrayView;
 use crate::arrays::scalar_fn::ScalarFnArrayView;
 use crate::kernel::ExecuteParentKernel;
 use crate::optimizer::rules::ArrayParentReduceRule;
@@ -63,7 +62,7 @@ where
     fn reduce_parent(
         &self,
         array: ArrayView<'_, V>,
-        parent: ParentScalarFnArrayView<'_, MaskExpr>,
+        parent: ScalarFnArrayView<'_, MaskExpr>,
         child_idx: usize,
     ) -> VortexResult<Option<ArrayRef>> {
         // Only reduce the input child (index 0), not the mask child (index 1).

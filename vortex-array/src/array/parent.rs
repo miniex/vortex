@@ -28,6 +28,7 @@ use crate::array::ArraySlots;
 use crate::array::ParentView;
 use crate::array::VTable;
 use crate::dtype::DType;
+use crate::matcher::AsParent;
 use crate::matcher::Matcher;
 use crate::optimizer::ArrayOptimizer;
 
@@ -86,7 +87,7 @@ type MaterializeFn = fn(
 /// Function pointer that runs encoding `V`'s self-reduce rules against a (possibly
 /// stack-borrowed) parent.
 ///
-/// Stored alongside [`MaterializeFn`] in [`ParentData::Parts`] so [`ParentRef::optimize`]
+/// Stored alongside [`MaterializeFn`] in [`ParentData::Parts`] so [`ArrayParts::optimize`](crate::array::ArrayParts::optimize)
 /// can dispatch `V::reduce` without being generic over `V`. The implementation builds a
 /// [`ParentView`] over the borrowed parts, so a rule that only inspects metadata never
 /// forces a materialization.
@@ -131,33 +132,6 @@ impl<'a> ParentRef<'a> {
         }
     }
 
-    /// Optimize this parent, materializing the parts if no stack reduction fires.
-    ///
-    /// Mirrors one iteration of [`ArrayRef::optimize`](crate::optimizer::ArrayOptimizer):
-    /// the parent's own `reduce` rules are tried first, then `reduce_parent` on each child
-    /// slot. Both run against the (possibly stack-borrowed) parent, so a reduction that
-    /// only inspects metadata never allocates an `Arc<ArrayInner<_>>`. When a rule fires
-    /// the result is re-driven through the full [`ArrayRef::optimize`] fixpoint.
-    ///
-    /// Running `reduce` first is what makes this equivalent to materializing the parts and
-    /// calling `ArrayRef::optimize`: the two paths differ only in whether the wrapper is
-    /// heap-allocated when no reduction applies.
-    pub fn optimize(self) -> VortexResult<ArrayRef> {
-        if let Some(reduced) = self.reduce()? {
-            return reduced.optimize();
-        }
-
-        for (slot_idx, slot) in self.slots.iter().enumerate() {
-            let Some(child) = slot else { continue };
-
-            if let Some(reduced) = child.reduce_parent(&self, slot_idx)? {
-                return reduced.optimize();
-            }
-        }
-
-        Ok(self.into_array_ref())
-    }
-
     /// Run the parent encoding's self-reduce rules against the parent.
     ///
     /// Mirrors [`ArrayRef::reduce`](crate::ArrayRef::reduce) for the `ParentRef` dispatch
@@ -190,53 +164,37 @@ impl<'a> ParentRef<'a> {
 
     /// Returns the encoding id of the parent.
     #[inline]
+    #[allow(clippy::same_name_method)]
     pub fn encoding_id(&self) -> ArrayId {
         self.encoding_id
     }
 
     /// Returns the dtype of the parent.
     #[inline]
+    #[allow(clippy::same_name_method)]
     pub fn dtype(&self) -> &DType {
         self.dtype
     }
 
     /// Returns the length of the parent.
     #[inline]
+    #[allow(clippy::same_name_method)]
     pub fn len(&self) -> usize {
         self.len
     }
 
     /// Returns whether the parent is empty.
     #[inline]
+    #[allow(clippy::same_name_method)]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
     /// Returns the slots of the parent.
     #[inline]
+    #[allow(clippy::same_name_method)]
     pub fn slots(&self) -> &[Option<ArrayRef>] {
         self.slots
-    }
-
-    /// Consume this `ParentRef` and return an owned [`ArrayRef`].
-    ///
-    /// Cheap for heap-backed parents (clones the existing `Arc`); for stack-backed
-    /// parents this materializes the borrowed parts into a fresh
-    /// `Arc<ArrayInner<_>>`, reusing the cached materialization if one was already
-    /// produced by [`ParentView::materialize_array_ref`].
-    pub fn into_array_ref(self) -> ArrayRef {
-        if let Some(cached) = self.cache.into_inner() {
-            return cached;
-        }
-        match self.data {
-            ParentData::Heap { array, .. } => array.clone(),
-            ParentData::Parts {
-                vtable,
-                data,
-                materialize,
-                ..
-            } => materialize(vtable, data, self.dtype, self.len, self.slots),
-        }
     }
 
     /// Consume this `ParentRef` and return the cached materialization, if one exists.
@@ -252,6 +210,7 @@ impl<'a> ParentRef<'a> {
     /// Cheap encoding-id check that works for both heap- and stack-backed parents
     /// without forcing materialization.
     #[inline]
+    #[allow(clippy::same_name_method)]
     pub(crate) fn is_encoding<V: VTable>(&self) -> bool {
         match self.data {
             ParentData::Heap { data, .. } => data.is::<ArrayData<V>>(),
@@ -260,6 +219,7 @@ impl<'a> ParentRef<'a> {
     }
 
     #[inline]
+    #[allow(clippy::same_name_method)]
     pub(crate) fn typed_data<V: VTable>(&self) -> Option<&V::TypedArrayData> {
         match self.data {
             ParentData::Heap { data, .. } => data
@@ -276,7 +236,8 @@ impl<'a> ParentRef<'a> {
     /// [`ParentView::materialize_array_ref`].
     ///
     /// This is the low-level entry point used by the blanket `VTable` matcher
-    /// implementation. Prefer [`Self::as_opt`] for matcher-based downcasts.
+    /// implementation. Prefer [`AsParent::as_opt`] for matcher-based downcasts.
+    #[allow(clippy::same_name_method)]
     pub fn as_parent_view<V: VTable>(&self) -> Option<ParentView<'_, V>> {
         let data = self.typed_data::<V>()?;
         // SAFETY: `typed_data::<V>()` returned Some, so the parent's encoding is
@@ -289,6 +250,7 @@ impl<'a> ParentRef<'a> {
     /// Mirrors [`ArrayRef::is`](ArrayRef::is) for the parent-side dispatch
     /// chain. Routes through [`Matcher::matches`] so matchers that can answer with
     /// a cheap encoding-id check don't force a downcast.
+    #[allow(clippy::same_name_method)]
     pub fn is<M: Matcher>(&self) -> bool {
         M::matches(self)
     }
@@ -299,26 +261,67 @@ impl<'a> ParentRef<'a> {
     /// dispatch chain. The returned match borrows from `self`, so stack-backed
     /// parents stay on the stack until a consumer explicitly materializes a
     /// [`ParentView`].
-    pub fn as_opt<M: Matcher>(&self) -> Option<M::ParentMatch<'_>> {
+    #[allow(clippy::same_name_method)]
+    pub fn as_opt<M: Matcher>(&self) -> Option<M::Match<'_>> {
         M::try_match(self)
     }
 
     /// Returns the parent downcast by the given matcher, panicking if it doesn't match.
     ///
     /// Mirrors [`ArrayRef::as_`](ArrayRef::as_).
-    pub fn as_<M: Matcher>(&self) -> M::ParentMatch<'_> {
+    #[allow(clippy::same_name_method)]
+    pub fn as_<M: Matcher>(&self) -> M::Match<'_> {
         self.as_opt::<M>().vortex_expect("Failed to downcast")
+    }
+}
+
+#[allow(clippy::same_name_method)]
+impl AsParent for ParentRef<'_> {
+    #[inline]
+    fn encoding_id(&self) -> ArrayId {
+        ParentRef::encoding_id(self)
+    }
+
+    #[inline]
+    fn dtype(&self) -> &DType {
+        ParentRef::dtype(self)
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        ParentRef::len(self)
+    }
+
+    #[inline]
+    fn slots(&self) -> &[Option<ArrayRef>] {
+        ParentRef::slots(self)
+    }
+
+    #[inline]
+    fn is_encoding<V: VTable>(&self) -> bool {
+        ParentRef::is_encoding::<V>(self)
+    }
+
+    #[inline]
+    fn typed_data<V: VTable>(&self) -> Option<&V::TypedArrayData> {
+        ParentRef::typed_data::<V>(self)
+    }
+
+    #[inline]
+    fn as_parent_view<V: VTable>(&self) -> Option<ParentView<'_, V>> {
+        ParentRef::as_parent_view::<V>(self)
     }
 }
 
 impl<V: VTable> ArrayParts<V> {
     /// Optimize already-valid construction parts, consuming the original parts on a miss.
     ///
-    /// This mirrors [`ParentRef::optimize`], but keeps ownership of the original
-    /// [`ArrayParts`] until it knows whether a reduction fired. If no rule applies and
-    /// the stack-backed parent was not materialized by a rule, the result is built with
-    /// [`ArrayParts::into_array`] directly rather than cloning the parts through
-    /// [`ParentRef::into_array_ref`].
+    /// This mirrors one iteration of [`ArrayRef::optimize`](crate::optimizer::ArrayOptimizer):
+    /// the parent's own `reduce` rules are tried first, then `reduce_parent` on each child
+    /// slot. Both run against the stack-borrowed parent, so a reduction that only inspects
+    /// metadata never allocates an `Arc<ArrayInner<_>>`. If no rule applies and the
+    /// stack-backed parent was not materialized by a rule, the result is built with
+    /// [`ArrayParts::into_array`] directly without cloning the parts.
     pub fn optimize(self) -> VortexResult<ArrayRef> {
         let parent = ParentRef::from_parts(&self);
         if let Some(reduced) = parent.reduce()? {
@@ -483,7 +486,7 @@ mod tests {
     /// calling [`ArrayRef::optimize`](crate::optimizer::ArrayOptimizer) — the two paths
     /// differ only in whether the wrapper is heap-allocated.
     ///
-    /// Regression test for [`ParentRef::optimize`] skipping the parent's own `reduce`
+    /// Regression test for [`ArrayParts::optimize`] skipping the parent's own `reduce`
     /// rules. A `Pack` scalar function collapses to a `StructArray` via the `ScalarFn`
     /// encoding's self-`reduce`. No `reduce_parent` rule mirrors this, so the reduction is
     /// only reachable through self-`reduce`: before `optimize` ran `reduce` first the stack
@@ -503,7 +506,7 @@ mod tests {
             .into_array()
             .optimize()?;
         let parts = ScalarFnArray::try_new_parts(pack, vec![a, b], len)?;
-        let stack = ParentRef::from_parts(&parts).optimize()?;
+        let stack = parts.optimize()?;
 
         assert!(
             heap.is::<Struct>(),

@@ -11,7 +11,6 @@ use crate::ExecutionCtx;
 use crate::array::ArrayView;
 use crate::array::VTable;
 use crate::arrays::scalar_fn::ExactScalarFn;
-use crate::arrays::scalar_fn::ParentScalarFnArrayView;
 use crate::arrays::scalar_fn::ScalarFnArrayView;
 use crate::kernel::ExecuteParentKernel;
 use crate::optimizer::rules::ArrayParentReduceRule;
@@ -54,7 +53,7 @@ where
     fn reduce_parent(
         &self,
         array: ArrayView<'_, V>,
-        parent: ParentScalarFnArrayView<'_, Between>,
+        parent: ScalarFnArrayView<'_, Between>,
         child_idx: usize,
     ) -> VortexResult<Option<ArrayRef>> {
         // Only process the main array child (index 0), not lower (1) or upper (2).

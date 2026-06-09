@@ -305,7 +305,7 @@ impl RunEnd {
 
     /// Run the array through run-end encoding.
     pub fn encode(array: ArrayRef, ctx: &mut ExecutionCtx) -> VortexResult<RunEndArray> {
-        if let Some(parray) = array.as_opt::<Primitive>() {
+        if let Some(parray) = array.as_typed::<Primitive>() {
             let (ends, values) = runend_encode(parray, ctx);
             let ends = ends.into_array();
             let len = array.len();
@@ -448,7 +448,7 @@ impl RunEndData {
 
     /// Run the array through run-end encoding.
     pub fn encode(array: ArrayRef, ctx: &mut ExecutionCtx) -> VortexResult<Self> {
-        if let Some(parray) = array.as_opt::<Primitive>() {
+        if let Some(parray) = array.as_typed::<Primitive>() {
             let (_ends, _values) = runend_encode(parray, ctx);
             // SAFETY: runend_encode handles this
             unsafe { Ok(Self::new_unchecked(0)) }

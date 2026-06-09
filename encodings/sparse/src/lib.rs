@@ -24,6 +24,7 @@ use vortex_array::ExecutionCtx;
 use vortex_array::ExecutionResult;
 use vortex_array::IntoArray;
 use vortex_array::ParentRef;
+use vortex_array::ParentView;
 use vortex_array::arrays::BoolArray;
 use vortex_array::arrays::ConstantArray;
 use vortex_array::arrays::Primitive;
@@ -662,6 +663,12 @@ pub trait SparseExt {
 }
 
 impl SparseExt for ArrayView<'_, Sparse> {
+    fn patches(&self) -> Patches {
+        SparseData::patches_from_slots(self.data(), self.len(), self.slots())
+    }
+}
+
+impl SparseExt for ParentView<'_, Sparse> {
     fn patches(&self) -> Patches {
         SparseData::patches_from_slots(self.data(), self.len(), self.slots())
     }

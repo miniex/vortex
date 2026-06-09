@@ -35,6 +35,7 @@ use crate::array::ArrayData;
 use crate::array::ArrayId;
 use crate::array::ArrayInner;
 use crate::array::DynArrayData;
+use crate::array::ParentMaterializer;
 use crate::array::ParentRef;
 use crate::array::ParentView;
 use crate::arrays::Constant;
@@ -48,6 +49,7 @@ use crate::dtype::Nullability;
 use crate::expr::stats::Precision;
 use crate::expr::stats::Stat;
 use crate::expr::stats::StatsProviderExt;
+use crate::matcher::AsParent;
 use crate::matcher::Matcher;
 use crate::scalar::Scalar;
 use crate::stats::StatsSetRef;
@@ -188,24 +190,28 @@ impl ArrayEq for ArrayRef {
 impl ArrayRef {
     /// Returns the length of the array.
     #[inline]
+    #[allow(clippy::same_name_method)]
     pub fn len(&self) -> usize {
         self.0.len
     }
 
     /// Returns whether the array is empty (has zero rows).
     #[inline]
+    #[allow(clippy::same_name_method)]
     pub fn is_empty(&self) -> bool {
         self.0.len == 0
     }
 
     /// Returns the logical Vortex [`DType`] of the array.
     #[inline]
+    #[allow(clippy::same_name_method)]
     pub fn dtype(&self) -> &DType {
         &self.0.dtype
     }
 
     /// Returns the encoding ID of the array.
     #[inline]
+    #[allow(clippy::same_name_method)]
     pub fn encoding_id(&self) -> ArrayId {
         self.0.encoding_id
     }
@@ -389,24 +395,28 @@ impl ArrayRef {
 
     /// Does the array match the given matcher.
     #[inline]
+    #[allow(clippy::same_name_method)]
     pub fn is<M: Matcher>(&self) -> bool {
-        M::matches_ref(self)
+        M::matches(self)
     }
 
     /// Returns the array downcast by the given matcher.
     #[inline]
-    pub fn as_<M: Matcher>(&self) -> M::RefMatch<'_> {
+    #[allow(clippy::same_name_method)]
+    pub fn as_<M: Matcher>(&self) -> M::Match<'_> {
         self.as_opt::<M>().vortex_expect("Failed to downcast")
     }
 
     /// Returns the array downcast by the given matcher.
     ///
-    /// Routes through the heap-array entry points (`Matcher::matches_ref` /
-    /// `Matcher::try_match_ref`) so matchers with a cheap, direct downcast — like
-    /// the blanket `VTable` matcher — don't pay for a [`ParentRef`] construction here.
+    /// The returned match never hides a materialization: heap-backed arrays are
+    /// already materialized, so [`ParentView::materialize_array_ref`]-style hooks
+    /// on the match are free. Use [`Self::as_typed`] for a direct [`ArrayView`]
+    /// downcast when heap-only APIs like [`ArrayView::array`] are needed.
     #[inline]
-    pub fn as_opt<M: Matcher>(&self) -> Option<M::RefMatch<'_>> {
-        M::try_match_ref(self)
+    #[allow(clippy::same_name_method)]
+    pub fn as_opt<M: Matcher>(&self) -> Option<M::Match<'_>> {
+        M::try_match(self)
     }
 
     /// Returns the array downcast to the given `Array<V>` as an owned typed handle.
@@ -681,6 +691,7 @@ impl ArrayRef {
     }
 
     /// Returns the slots of the array.
+    #[allow(clippy::same_name_method)]
     pub fn slots(&self) -> &[Option<ArrayRef>] {
         &self.0.slots
     }
@@ -731,38 +742,79 @@ impl IntoArray for ArrayRef {
     }
 }
 
+impl ParentMaterializer for ArrayRef {
+    #[inline]
+    fn materialize_array_ref(&self) -> &ArrayRef {
+        self
+    }
+}
+
+#[allow(clippy::same_name_method)]
+impl AsParent for ArrayRef {
+    #[inline]
+    fn encoding_id(&self) -> ArrayId {
+        ArrayRef::encoding_id(self)
+    }
+
+    #[inline]
+    fn dtype(&self) -> &DType {
+        ArrayRef::dtype(self)
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        ArrayRef::len(self)
+    }
+
+    #[inline]
+    fn slots(&self) -> &[Option<ArrayRef>] {
+        ArrayRef::slots(self)
+    }
+
+    /// Direct downcast on the heap array. The hot `ArrayRef::is::<V>()` path goes
+    /// through here, so any extra work shows up in downstream micro-benchmarks
+    /// (`patches_lookup`, `chunk_array_builder`, ...).
+    #[inline]
+    fn is_encoding<V: VTable>(&self) -> bool {
+        self.0.data.as_any().is::<ArrayData<V>>()
+    }
+
+    #[inline]
+    fn typed_data<V: VTable>(&self) -> Option<&V::TypedArrayData> {
+        self.0
+            .data
+            .as_any()
+            .downcast_ref::<ArrayData<V>>()
+            .map(|data| &data.data)
+    }
+
+    #[inline]
+    fn as_parent_view<V: VTable>(&self) -> Option<ParentView<'_, V>> {
+        let data = AsParent::typed_data::<V>(self)?;
+        // SAFETY: `typed_data::<V>()` returned Some, so the array's encoding is
+        // `V` and `data` is the `V::TypedArrayData` stored inside `self`.
+        Some(unsafe { ParentView::new_unchecked(self, data) })
+    }
+}
+
 impl<V: VTable> Matcher for V {
-    type RefMatch<'a> = ArrayView<'a, V>;
-    type ParentMatch<'a> = ParentView<'a, V>;
+    type Match<'a> = ParentView<'a, V>;
 
     /// Match by encoding id (no materialization). Equivalent to
-    /// [`Matcher::try_match`].is_some() but avoids constructing an
-    /// [`ArrayView`] for parents that do not need one.
-    fn matches(parent: &ParentRef<'_>) -> bool {
+    /// [`Matcher::try_match`].is_some() but avoids constructing a
+    /// [`ParentView`] for parents that do not need one.
+    #[inline]
+    fn matches<P: AsParent>(parent: &P) -> bool {
         parent.is_encoding::<V>()
     }
 
-    /// Returns an [`ArrayView`] for the parent if its encoding is `V`.
+    /// Returns a [`ParentView`] for the parent if its encoding is `V`.
     ///
-    /// The returned [`ArrayView`] is stack-backed when the parent is stack-backed,
+    /// The returned [`ParentView`] is stack-backed when the parent is stack-backed,
     /// so no `Arc<ArrayInner<_>>` is allocated until a downstream consumer reaches
-    /// for [`ArrayView::array`].
-    fn try_match<'a>(parent: &'a ParentRef<'_>) -> Option<Self::ParentMatch<'a>> {
+    /// for [`ParentView::materialize_array_ref`].
+    #[inline]
+    fn try_match<'a, P: AsParent>(parent: &'a P) -> Option<Self::Match<'a>> {
         parent.as_parent_view::<V>()
-    }
-
-    /// Fast encoding-id check that skips [`ParentRef`] construction. The hot
-    /// `ArrayRef::is::<V>()` path goes through here, so any extra work shows up in
-    /// downstream micro-benchmarks (`patches_lookup`, `chunk_array_builder`, ...).
-    #[inline]
-    fn matches_ref(array: &ArrayRef) -> bool {
-        array.0.data.as_any().is::<ArrayData<V>>()
-    }
-
-    /// Direct downcast — same fast path as [`Matcher::matches_ref`] but also produces
-    /// the [`ArrayView`] when it matches.
-    #[inline]
-    fn try_match_ref(array: &ArrayRef) -> Option<Self::RefMatch<'_>> {
-        array.as_typed::<V>()
     }
 }

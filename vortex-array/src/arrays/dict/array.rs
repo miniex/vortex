@@ -237,7 +237,7 @@ impl Array<Dict> {
     }
 
     /// Build the [`ArrayParts<Dict>`]. The parts can then be optimized through
-    /// [`ParentRef::optimize`](crate::array::ParentRef::optimize) or materialized
+    /// [`ArrayParts::optimize`](crate::array::ArrayParts::optimize) or materialized
     /// directly with [`ArrayParts::into_array`].
     pub fn try_new_parts(codes: ArrayRef, values: ArrayRef) -> VortexResult<ArrayParts<Dict>> {
         let dtype = values
@@ -255,7 +255,7 @@ impl Array<Dict> {
     /// all values are referenced by at least one code.
     ///
     /// The parts can then be optimized through
-    /// [`ParentRef::optimize`](crate::array::ParentRef::optimize) or materialized directly
+    /// [`ArrayParts::optimize`](crate::array::ArrayParts::optimize) or materialized directly
     /// with [`ArrayParts::into_array`]. Unlike
     /// [`set_all_values_referenced`](Self::set_all_values_referenced), this does not run the
     /// debug-only `all_values_referenced` validation, so it is intended for callers that

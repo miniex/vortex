@@ -9,11 +9,11 @@ use crate::ArrayRef;
 use crate::ExecutionCtx;
 use crate::IntoArray;
 use crate::array::ArrayView;
+use crate::array::TypedArrayRef;
 use crate::array::VTable;
 use crate::arrays::Constant;
 use crate::arrays::ConstantArray;
 use crate::arrays::scalar_fn::ExactScalarFn;
-use crate::arrays::scalar_fn::ParentScalarFnArrayView;
 use crate::arrays::scalar_fn::ScalarFnArrayView;
 use crate::builtins::ArrayBuiltins;
 use crate::kernel::ExecuteParentKernel;
@@ -90,7 +90,7 @@ pub(super) fn precondition(
 /// Fill null on a [`ConstantArray`] by replacing null scalars with the fill value,
 /// or casting non-null scalars to the fill value's dtype.
 pub(crate) fn fill_null_constant(
-    array: ArrayView<Constant>,
+    array: impl TypedArrayRef<Constant>,
     fill_value: &Scalar,
 ) -> VortexResult<ArrayRef> {
     let scalar = if array.scalar().is_null() {
@@ -114,7 +114,7 @@ where
     fn reduce_parent(
         &self,
         array: ArrayView<'_, V>,
-        parent: ParentScalarFnArrayView<'_, FillNullExpr>,
+        parent: ScalarFnArrayView<'_, FillNullExpr>,
         child_idx: usize,
     ) -> VortexResult<Option<ArrayRef>> {
         // Only process the input child (index 0), not the fill_value child (index 1).

@@ -94,7 +94,7 @@ pub fn turboquant_encode(
     let num_rows = l2_denorm.len();
 
     let normalized_ext = normalized
-        .as_opt::<Extension>()
+        .as_typed::<Extension>()
         .vortex_expect("normalize_as_l2_denorm always produces an Extension array child");
 
     // SAFETY: `normalize_as_l2_denorm` guarantees every row is unit-norm (or zero for null rows).

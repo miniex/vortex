@@ -121,7 +121,7 @@ where
     fn execute_parent(
         &self,
         array: ArrayView<'_, V>,
-        parent: <Self::Parent as Matcher>::RefMatch<'_>,
+        parent: <Self::Parent as Matcher>::Match<'_>,
         child_idx: usize,
         ctx: &mut ExecutionCtx,
     ) -> VortexResult<Option<ArrayRef>> {

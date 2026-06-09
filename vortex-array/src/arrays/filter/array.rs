@@ -107,7 +107,7 @@ impl Array<Filter> {
     }
 
     /// Builds the [`ArrayParts<Filter>`]. The parts can then be optimized through
-    /// [`ParentRef::optimize`](crate::array::ParentRef::optimize) or materialized
+    /// [`ArrayParts::optimize`](crate::array::ArrayParts::optimize) or materialized
     /// directly with [`ArrayParts::into_array`].
     pub fn try_new_parts(array: ArrayRef, mask: Mask) -> VortexResult<ArrayParts<Filter>> {
         let dtype = array.dtype().clone();

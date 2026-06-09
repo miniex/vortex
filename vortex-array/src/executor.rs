@@ -168,7 +168,7 @@ impl ArrayRef {
         for _ in 0..max_iterations {
             let is_done = stack
                 .last()
-                .map_or(M::matches_ref as DonePredicate, |frame| frame.done);
+                .map_or(M::matches::<ArrayRef> as DonePredicate, |frame| frame.done);
 
             if is_done(&current_array) || current_array.is::<AnyCanonical>() {
                 match stack.pop() {
@@ -682,7 +682,7 @@ impl ExecutionResult {
     pub fn execute_slot<M: Matcher>(array: impl IntoArray, slot_idx: usize) -> Self {
         Self {
             array: array.into_array(),
-            step: ExecutionStep::ExecuteSlot(slot_idx, M::matches_ref),
+            step: ExecutionStep::ExecuteSlot(slot_idx, M::matches::<ArrayRef>),
         }
     }
 

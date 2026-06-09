@@ -27,7 +27,7 @@ pub(crate) fn struct_cast_execute_parent(
     _child_idx: usize,
     ctx: &mut ExecutionCtx,
 ) -> VortexResult<Option<ArrayRef>> {
-    let Some(array) = child.as_opt::<Struct>() else {
+    let Some(array) = child.as_typed::<Struct>() else {
         return Ok(None);
     };
     let Some(parent) = parent.as_opt::<ExactScalarFn<Cast>>() else {

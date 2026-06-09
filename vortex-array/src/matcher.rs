@@ -1,59 +1,113 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright the Vortex contributors
 
+use vortex_error::VortexExpect;
+
 use crate::ArrayRef;
+use crate::array::ArrayId;
 use crate::array::ParentRef;
+use crate::array::ParentView;
+use crate::array::VTable;
+use crate::dtype::DType;
+
+mod private {
+    pub trait Sealed {}
+}
+
+impl private::Sealed for ArrayRef {}
+impl private::Sealed for ParentRef<'_> {}
+
+/// A parent array that matchers can inspect without forcing materialization.
+///
+/// Implemented by [`ArrayRef`] (always heap-backed) and [`ParentRef`] (heap- or
+/// stack-backed), so a single [`Matcher`] implementation serves both the execute
+/// dispatch chain (heap arrays) and the parent-reduce dispatch chain
+/// (stack-allocated construction parts).
+///
+/// This trait is sealed: matcher code can rely on materialization being free for
+/// heap-backed parents and explicit for stack-backed ones.
+pub trait AsParent: private::Sealed {
+    /// Returns the encoding id of the parent.
+    fn encoding_id(&self) -> ArrayId;
+
+    /// Returns the dtype of the parent.
+    fn dtype(&self) -> &DType;
+
+    /// Returns the length of the parent.
+    fn len(&self) -> usize;
+
+    /// Returns whether the parent is empty.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Returns the child slots of the parent.
+    fn slots(&self) -> &[Option<ArrayRef>];
+
+    /// Returns `true` if the parent's encoding is `V`.
+    ///
+    /// Cheap encoding-id check that never constructs a view or materializes
+    /// stack-backed parents.
+    fn is_encoding<V: VTable>(&self) -> bool;
+
+    /// Returns the `V`-typed encoding data if the parent's encoding is `V`.
+    fn typed_data<V: VTable>(&self) -> Option<&V::TypedArrayData>;
+
+    /// Returns a typed [`ParentView`] if the parent's encoding is `V`.
+    ///
+    /// The returned view borrows from `self`; stack-backed parents stay on the
+    /// stack until a consumer explicitly calls
+    /// [`ParentView::materialize_array_ref`].
+    fn as_parent_view<V: VTable>(&self) -> Option<ParentView<'_, V>>;
+
+    /// Does the parent match the given matcher.
+    fn is<M: Matcher>(&self) -> bool
+    where
+        Self: Sized,
+    {
+        M::matches(self)
+    }
+
+    /// Returns the parent downcast by the given matcher, or `None` if it doesn't match.
+    fn as_opt<M: Matcher>(&self) -> Option<M::Match<'_>>
+    where
+        Self: Sized,
+    {
+        M::try_match(self)
+    }
+
+    /// Returns the parent downcast by the given matcher, panicking if it doesn't match.
+    fn as_<M: Matcher>(&self) -> M::Match<'_>
+    where
+        Self: Sized,
+    {
+        self.as_opt::<M>().vortex_expect("Failed to downcast")
+    }
+}
 
 /// Trait for matching array types.
 ///
-/// Matchers expose two parallel entry points:
-///
-/// - [`matches`](Self::matches) / [`try_match`](Self::try_match) take a [`ParentRef`].
-///   This is the more general path because a `ParentRef` can borrow either a
-///   heap-allocated [`ArrayRef`] or stack-allocated construction parts, so it works
-///   uniformly for the optimizer's parent-reduce dispatch.
-/// - [`matches_ref`](Self::matches_ref) / [`try_match_ref`](Self::try_match_ref) take
-///   an [`ArrayRef`] directly. They exist as a fast path for callers that already
-///   hold a heap-allocated array (e.g. `ArrayRef::is::<M>()`, `ArrayRef::as_opt::<M>()`)
-///   so they don't pay for [`ParentRef`] construction.
-///
-/// The heap and parent paths have different associated match types. Heap matches may expose
-/// APIs like `AsRef<ArrayRef>` because they borrow an existing allocation. Parent matches must
-/// not hide stack materialization behind those APIs.
+/// Matchers take any [`AsParent`] — a heap-allocated [`ArrayRef`] or a possibly
+/// stack-allocated [`ParentRef`] — so one implementation serves both dispatch
+/// chains. The returned match borrows from the parent and must not hide stack
+/// materialization: matches expose an explicit
+/// [`ParentView::materialize_array_ref`]-style hook instead of `AsRef<ArrayRef>`.
 pub trait Matcher {
-    type RefMatch<'a>;
-    type ParentMatch<'a>;
+    /// The view type produced by a successful match, borrowing from the parent.
+    type Match<'a>;
 
     /// Check if the given parent matches this matcher type.
     ///
     /// The default implementation delegates through [`try_match`](Self::try_match).
     /// Override when a cheaper check (e.g. an encoding-id comparison) suffices.
-    fn matches(parent: &ParentRef<'_>) -> bool {
+    fn matches<P: AsParent>(parent: &P) -> bool {
         Self::try_match(parent).is_some()
     }
 
-    /// Try to match a [`ParentRef`].
+    /// Try to match the parent, returning the matched view type if successful.
     ///
-    /// The returned parent match borrows from `parent`, so matchers can return a
-    /// [`ParentView`](crate::array::ParentView) without forcing the parent to materialize.
-    /// Implementations typically delegate to [`ParentRef::as_opt`].
-    fn try_match<'a>(parent: &'a ParentRef<'_>) -> Option<Self::ParentMatch<'a>>;
-
-    /// Check if the given heap-allocated array matches this matcher type.
-    ///
-    /// The default implementation delegates through
-    /// [`try_match_ref`](Self::try_match_ref), but matchers that can answer cheaply
-    /// (encoding-id checks, no view construction) should override this directly so
-    /// hot callers like `ArrayRef::is::<M>()` don't pay the `try_match_ref` cost.
-    fn matches_ref(array: &ArrayRef) -> bool {
-        Self::try_match_ref(array).is_some()
-    }
-
-    /// Try to match a heap-allocated [`ArrayRef`], returning the matched view type
-    /// if successful.
-    ///
-    /// This is the heap-only fast path: callers that already hold an `ArrayRef`
-    /// skip `ParentRef` construction. Implementations typically delegate to
-    /// [`ArrayRef::as_typed`](crate::ArrayRef::as_typed).
-    fn try_match_ref(array: &ArrayRef) -> Option<Self::RefMatch<'_>>;
+    /// The returned match borrows from `parent`, so matchers can return a
+    /// [`ParentView`] without forcing the parent to materialize. Implementations
+    /// typically delegate to [`AsParent::as_parent_view`] or [`AsParent::as_opt`].
+    fn try_match<'a, P: AsParent>(parent: &'a P) -> Option<Self::Match<'a>>;
 }

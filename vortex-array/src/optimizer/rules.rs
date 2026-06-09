@@ -54,7 +54,7 @@ pub trait ArrayReduceRule<V: VTable>: Debug + Send + Sync + 'static {
 /// # Stack-backed parents
 ///
 /// Construction-side callers borrow `ArrayParts` as a [`ParentRef`] via
-/// [`ParentRef::optimize`](crate::array::ParentRef::optimize). [`Matcher::try_match`]
+/// [`ArrayParts::optimize`](crate::array::ArrayParts::optimize). [`Matcher::try_match`]
 /// returns a [`ParentView`] without materializing an `Arc<ArrayInner<_>>`, so rules that
 /// consume only typed metadata can fire without forcing a heap allocation.
 pub trait ArrayParentReduceRule<V: VTable>: Debug + Send + Sync + 'static {
@@ -70,14 +70,14 @@ pub trait ArrayParentReduceRule<V: VTable>: Debug + Send + Sync + 'static {
     ///
     /// # Stack-backed parents
     ///
-    /// The parent is received through [`Matcher::ParentMatch`]. For the blanket
+    /// The parent is received through [`Matcher::Match`]. For the blanket
     /// `impl<V: VTable> Matcher for V`, that is a [`ParentView`] borrowed from the
     /// parent — no `Arc<ArrayInner<_>>` is allocated unless the rule explicitly
     /// materializes it.
     fn reduce_parent(
         &self,
         array: ArrayView<'_, V>,
-        parent: <Self::Parent as Matcher>::ParentMatch<'_>,
+        parent: <Self::Parent as Matcher>::Match<'_>,
         child_idx: usize,
     ) -> VortexResult<Option<ArrayRef>>;
 }

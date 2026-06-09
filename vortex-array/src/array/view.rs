@@ -5,15 +5,16 @@ use std::fmt::Debug;
 use std::fmt::Formatter;
 use std::ops::Deref;
 
+use vortex_error::VortexExpect;
 use vortex_error::VortexResult;
 
 use crate::ArrayRef;
 use crate::array::Array;
 use crate::array::ArrayId;
 use crate::array::ParentMaterializer;
-use crate::array::ParentRef;
 use crate::array::VTable;
 use crate::dtype::DType;
+use crate::matcher::AsParent;
 use crate::stats::StatsSetRef;
 use crate::validity::Validity;
 
@@ -106,7 +107,7 @@ impl<'a, V: VTable> ArrayView<'a, V> {
 /// A typed view over a parent array during metadata-only reduction.
 ///
 /// `ParentView` can borrow either a heap-backed parent or stack-allocated construction
-/// parts via [`ParentRef`]. It intentionally does not implement [`AsRef<ArrayRef>`] and
+/// parts via [`ParentRef`](crate::array::ParentRef). It intentionally does not implement [`AsRef<ArrayRef>`] and
 /// does not expose an `array()` method: callers that truly need an [`ArrayRef`] must call
 /// [`Self::materialize_array_ref`] so the allocation boundary is visible in code review.
 pub struct ParentView<'a, V: VTable> {
@@ -127,13 +128,13 @@ impl<V: VTable> Clone for ParentView<'_, V> {
 }
 
 impl<'a, V: VTable> ParentView<'a, V> {
-    /// Construct a parent view borrowing a [`ParentRef`].
+    /// Construct a parent view borrowing any [`AsParent`].
     ///
     /// # Safety
     /// Caller must ensure `parent.is_encoding::<V>()` and that `data` is the
     /// `V::TypedArrayData` borrowed inside `parent`.
-    pub(crate) unsafe fn new_unchecked(
-        parent: &'a ParentRef<'_>,
+    pub(crate) unsafe fn new_unchecked<P: AsParent + ParentMaterializer>(
+        parent: &'a P,
         data: &'a V::TypedArrayData,
     ) -> Self {
         debug_assert!(parent.is_encoding::<V>());
@@ -154,6 +155,16 @@ impl<'a, V: VTable> ParentView<'a, V> {
     #[inline]
     pub fn materialize_array_ref(&self) -> &'a ArrayRef {
         self.materializer.materialize_array_ref()
+    }
+
+    /// Explicitly materialize the parent as a heap-backed [`ArrayView`].
+    ///
+    /// For heap-backed parents this is free; stack-backed parents allocate an
+    /// `ArrayRef` on first call and reuse the parent's cache after that.
+    pub fn materialize_view(&self) -> ArrayView<'a, V> {
+        self.materialize_array_ref()
+            .as_typed::<V>()
+            .vortex_expect("materialized parent must keep its encoding")
     }
 
     #[inline]

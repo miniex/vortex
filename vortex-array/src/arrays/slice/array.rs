@@ -100,7 +100,7 @@ impl Array<Slice> {
     }
 
     /// Builds the [`ArrayParts<Slice>`] for a slice. The parts can then be
-    /// optimized through [`ParentRef::optimize`](crate::array::ParentRef::optimize)
+    /// optimized through [`ArrayParts::optimize`](crate::array::ArrayParts::optimize)
     /// or materialized directly with [`ArrayParts::into_array`].
     pub fn try_new_parts(child: ArrayRef, range: Range<usize>) -> VortexResult<ArrayParts<Slice>> {
         let len = range.len();

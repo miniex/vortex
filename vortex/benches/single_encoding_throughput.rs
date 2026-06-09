@@ -564,7 +564,7 @@ mod turboquant_benches {
                         .bench_refs(|(a, ctx)| {
                             let normalized = a
                                 .as_ref()
-                                .as_opt::<Extension>()
+                                .as_typed::<Extension>()
                                 .expect("normalized benchmark input should be an Extension array");
                             // SAFETY: Benchmark inputs are normalized once up front so the timed
                             // region measures only TurboQuant encoding.

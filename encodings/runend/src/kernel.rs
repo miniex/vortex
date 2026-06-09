@@ -7,6 +7,7 @@ use vortex_array::ArrayRef;
 use vortex_array::ArrayView;
 use vortex_array::ExecutionCtx;
 use vortex_array::IntoArray;
+use vortex_array::ParentView;
 use vortex_array::arrays::ConstantArray;
 use vortex_array::arrays::Slice;
 use vortex_array::arrays::dict::TakeExecuteAdaptor;
@@ -41,7 +42,7 @@ impl ExecuteParentKernel<RunEnd> for RunEndSliceKernel {
     fn execute_parent(
         &self,
         array: ArrayView<'_, RunEnd>,
-        parent: ArrayView<'_, Slice>,
+        parent: ParentView<'_, Slice>,
         _child_idx: usize,
         ctx: &mut ExecutionCtx,
     ) -> VortexResult<Option<ArrayRef>> {
