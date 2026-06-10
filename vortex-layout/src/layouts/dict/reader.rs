@@ -19,8 +19,15 @@ use vortex_array::arrays::SharedArray;
 use vortex_array::dtype::DType;
 use vortex_array::dtype::FieldMask;
 use vortex_array::expr::Expression;
+use vortex_array::expr::is_root;
+use vortex_array::expr::label_is_fallible;
+use vortex_array::expr::label_null_sensitive;
 use vortex_array::expr::root;
+use vortex_array::expr::traversal::NodeExt;
+use vortex_array::expr::traversal::Transformed;
+use vortex_array::expr::traversal::TraversalOrder;
 use vortex_array::optimizer::ArrayOptimizer;
+use vortex_array::scalar_fn::is_negative_cost;
 use vortex_error::VortexError;
 use vortex_error::VortexExpect;
 use vortex_error::VortexResult;
@@ -100,10 +107,7 @@ impl DictReader {
                     )
                     .vortex_expect("must construct dict values array evaluation")
                     .map_err(Arc::new)
-                    .map(move |array| {
-                        let array = array?;
-                        Ok(SharedArray::new(array).into_array())
-                    })
+                    .map(move |array| Ok(SharedArray::new(array?).into_array()))
                     .boxed()
                     .shared()
             })
@@ -153,6 +157,49 @@ impl DictReader {
             })
             .clone()
     }
+}
+
+fn references_root(expr: &Expression) -> bool {
+    is_root(expr) || expr.children().iter().any(references_root)
+}
+
+/// Split expression into two parts:
+///
+/// left is the optional outer part that we want to apply to array after
+/// canonicalizing.
+/// right is the optional inner part that we want to apply to array before
+/// canonicalizing.
+///
+/// We want to push to array only if expression has a negative cost, is
+/// infallible and null-insensitive.
+fn split_expression_for_pushdown(expr: Expression) -> (Option<Expression>, Option<Expression>) {
+    let labelled_expr = expr.clone();
+    let fallible = label_is_fallible(&labelled_expr);
+    let null_sensitive = label_null_sensitive(&labelled_expr);
+    let mut inner: Option<Expression> = None;
+
+    let outer = expr
+        .transform_down(|node| {
+            if is_negative_cost(node.id())
+                && references_root(&node)
+                && !fallible.get(&node).copied().unwrap_or(true)
+                && !null_sensitive.get(&node).copied().unwrap_or(true)
+            {
+                inner = Some(node);
+                Ok(Transformed {
+                    value: root(),
+                    changed: true,
+                    order: TraversalOrder::Skip,
+                })
+            } else {
+                Ok(Transformed::no(node))
+            }
+        })
+        .vortex_expect("infallible")
+        .into_inner();
+
+    let outer = (!is_root(&outer)).then_some(outer);
+    (outer, inner)
 }
 
 impl LayoutReader for DictReader {
@@ -229,13 +276,18 @@ impl LayoutReader for DictReader {
         mask: MaskFuture,
     ) -> VortexResult<BoxFuture<'static, VortexResult<ArrayRef>>> {
         // TODO: fix up expr partitioning with fallible & null sensitive annotations
-        let values_eval = self.values_array();
         let codes_eval = self
             .codes
             .projection_evaluation(row_range, &root(), mask)
             .map_err(|err| err.with_context("While evaluating projection on codes"))?;
-        let expr = expr.clone();
 
+        let (expr_outer, expr_inner) = split_expression_for_pushdown(expr.clone());
+
+        let values_eval = if let Some(inner) = expr_inner {
+            self.values_eval(inner)
+        } else {
+            self.values_array()
+        };
         let all_values_referenced = self.layout.has_all_values_referenced();
         Ok(async move {
             let (values, codes) = try_join!(values_eval.map_err(VortexError::from), codes_eval)?;
@@ -252,7 +304,11 @@ impl LayoutReader for DictReader {
             .into_array()
             .optimize()?;
 
-            array.apply(&expr)
+            if let Some(expr) = expr_outer {
+                array.apply(&expr)
+            } else {
+                Ok(array)
+            }
         }
         .boxed())
     }
@@ -281,11 +337,20 @@ mod tests {
     use vortex_array::dtype::FieldName;
     use vortex_array::dtype::FieldNames;
     use vortex_array::dtype::Nullability;
+    use vortex_array::dtype::PType;
+    use vortex_array::expr::Expression;
+    use vortex_array::expr::byte_length;
+    use vortex_array::expr::cast;
     use vortex_array::expr::eq;
     use vortex_array::expr::is_not_null;
+    use vortex_array::expr::is_root;
+    use vortex_array::expr::like;
     use vortex_array::expr::lit;
     use vortex_array::expr::pack;
     use vortex_array::expr::root;
+    use vortex_array::expr::traversal::NodeExt;
+    use vortex_array::expr::traversal::Transformed;
+    use vortex_array::expr::traversal::TraversalOrder;
     use vortex_array::scalar_fn::session::ScalarFnSession;
     use vortex_array::session::ArraySession;
     use vortex_array::validity::Validity;
@@ -296,6 +361,7 @@ mod tests {
     use vortex_io::session::RuntimeSessionExt;
     use vortex_session::VortexSession;
 
+    use super::split_expression_for_pushdown;
     use crate::LayoutId;
     use crate::LayoutRef;
     use crate::LayoutStrategy;
@@ -541,5 +607,62 @@ mod tests {
                 .into_array();
             assert_arrays_eq!(actual_canonical, expected);
         })
+    }
+
+    fn join_split_expr(initial: &Expression, outer: Option<Expression>, inner: Option<Expression>) {
+        let outer_expr = outer.unwrap_or_else(root);
+        let inner_expr = inner.unwrap_or_else(root);
+        let expected = outer_expr
+            .transform_down(|node| {
+                if !is_root(&node) {
+                    return Ok(Transformed::no(node));
+                }
+                Ok(Transformed {
+                    value: inner_expr.clone(),
+                    changed: true,
+                    order: TraversalOrder::Skip,
+                })
+            })
+            .vortex_expect("infallible");
+        assert_eq!(&expected.into_inner(), initial);
+    }
+
+    #[test]
+    fn split_expr_cast_root() {
+        let (outer, inner) = split_expression_for_pushdown(root());
+        assert_eq!(outer, None);
+        assert_eq!(inner, None); // Applying root to array is useless work
+    }
+
+    #[test]
+    fn split_expr_partial_pushdown() {
+        let dtype = DType::Primitive(PType::U64, Nullability::NonNullable);
+        let expr = cast(byte_length(root()), dtype.clone());
+        let (outer, inner) = split_expression_for_pushdown(expr.clone());
+        // [0] = cast([1], dtype)
+        // [1] = byte_length(root)
+        assert_eq!(outer, Some(cast(root(), dtype)));
+        assert_eq!(inner, Some(byte_length(root())));
+        join_split_expr(&expr, outer, inner);
+    }
+
+    #[test]
+    fn split_expr_full_pushdown() {
+        let expr = byte_length(root());
+        let (outer, inner) = split_expression_for_pushdown(expr.clone());
+        assert_eq!(outer, None);
+        assert_eq!(inner, Some(byte_length(root())));
+        join_split_expr(&expr, outer, inner);
+    }
+
+    #[test]
+    fn split_expr_no_pushdown() {
+        // We can push down lit(), but it we replace
+        // lit() with root(), the semantics change.
+        let expr = like(root(), lit(1u64));
+        let (outer, inner) = split_expression_for_pushdown(expr.clone());
+        assert_eq!(outer, Some(expr.clone()));
+        assert_eq!(inner, None);
+        join_split_expr(&expr, outer, inner);
     }
 }

@@ -48,3 +48,18 @@ mod sealed {
     /// This can be the **only** implementor for [`super::typed::DynScalarFn`].
     impl<V: ScalarFnVTable> Sealed for TypedScalarFnInstance<V> {}
 }
+
+/*
+ * A scalar function has a negative cost if applying it to an array and
+ * canonicalizing is cheaper than canonicalizing an array and applying it.
+ *
+ * Example of negative cost expressions are byte_length() and get_item() since
+ * they don't depend on input size.
+ *
+ * Example of non-negative cost expression is like()
+ */
+pub fn is_negative_cost(id: ScalarFnId) -> bool {
+    id == Id::new_static("vortex.byte_length")
+        || id == Id::new_static("vortex.get_item")
+        || id == Id::new_static("vortex.literal")
+}
