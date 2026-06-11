@@ -13,16 +13,16 @@ pr_index: 4
 outstanding_must_fix: 0
 deferred_items_total: 22
 last_user_touchpoint: 2026-06-12T00:30:00Z
-last_user_touchpoint_what: "PR-5.1.5 CLOSED (Step 2.5). Read-path perf shipped, deployed, live-verified, and gauntlet-accepted at the project ~3-cycle cap; full close-out in the PR-5.1.5 Implementation status entry. Skip scans (15b778b01) + sargable (2e637401e) + write-path commit_timestamp (e3861734e) + 3 gauntlet-fix commits (572b3bdf6 cycle 1, cbe2b97b2 cycle 2, b20904ae0 cycle 3). Live: /api/groups cold 0.64-1.07s (was 6.0s) / 0.079s cached; tpch chart 13.6s->0.094s. Migrations 006+007 applied to prod as master + VACUUM ANALYZE. PR-5.0 deferred data-checks RESOLVED (chart-count sets match live v2 bench.vortex.dev; 5-slug latest-value spot-check within variance). All suites green (web vitest 214, migrate Rust 100, python 154). Gauntlet: 3 cycles, executor=parallel (Claude+Codex per lens); cycle-3 must-fixes were operator-runbook doc drift (infra/README.md + provision.sh) + tests, zero production-logic, accepted at cap. NEXT: PR-5.1 (promote v4 --postgres ingest to required + drop v3 --server write from the 3 CI workflows; pre-promotion gate = re-run the PR-3.5 cross-check clean; ship scripts/psql-bench.sh). Each prod write remains harness-gated. Pre-squash backup ref backup/bench-v4-pre-squash-* still MISSING — recreate before PR-5.3/final squash."
+last_user_touchpoint_what: "PR-5.1.5 CLOSED (Step 2.5). Read-path perf shipped, deployed, live-verified, and gauntlet-accepted at the project ~3-cycle cap; full close-out in the PR-5.1.5 Implementation status entry. Skip scans (15b778b01) + sargable (2e637401e) + write-path commit_timestamp (e3861734e) + 3 gauntlet-fix commits (572b3bdf6 cycle 1, cbe2b97b2 cycle 2, b20904ae0 cycle 3). Live: /api/groups cold 0.64-1.07s (was 6.0s) / 0.079s cached; tpch chart 13.6s->0.094s. Migrations 006+007 applied to prod as master + VACUUM ANALYZE. PR-5.0 deferred data-checks RESOLVED (chart-count sets match live v2 bench.vortex.dev; 5-slug latest-value spot-check within variance). All suites green (web vitest 214, migrate Rust 100, python 154). Gauntlet: 3 cycles, executor=parallel (Claude+Codex per lens); cycle-3 must-fixes were operator-runbook doc drift (infra/README.md + provision.sh) + tests, zero production-logic, accepted at cap. NEXT: PR-5.1 (promote v4 --postgres ingest to required + drop v3 --server write from the 3 CI workflows; pre-promotion gate = re-run the PR-3.5 cross-check clean; ship scripts/psql-bench.sh). Each prod write remains harness-gated. Pre-squash backup ref refs/backups/ct-bench-v4-pre-squash-386ea347b created at the old 143-commit tip (386ea347b). The granular Phase-4-remainder + Phase-5 history was then squashed to one commit per phase and the branch rebased onto origin/develop (clean, no conflicts), giving Phase 4 = b9fc6220d, Phase 5 = 856bf7146; phase_entry_sha + last_commit re-pointed accordingly. Recreate a fresh backup ref before any PR-5.3/final squash."
 subagent_invocations_this_pr: 0
 subagent_invocations_total: 162
 review_cycles_this_pr: 0
-phase_entry_sha: 9f68717b8
+phase_entry_sha: b9fc6220d
 phase_end_cycle: 0
 phase_end_reject_cycles: 0
 last_phase_end_verdict: null
 current_pr_is_ci_reopen: null
-last_commit: b20904ae0
+last_commit: 856bf7146
 last_cycle_commits: []
 ```
 
