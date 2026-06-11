@@ -4,7 +4,9 @@
 use std::sync::Arc;
 
 use tracing::debug;
+use vortex::dtype::DType;
 use vortex::dtype::Nullability;
+use vortex::dtype::PType;
 use vortex::error::VortexError;
 use vortex::error::VortexExpect;
 use vortex::error::VortexResult;
@@ -13,6 +15,8 @@ use vortex::error::vortex_ensure;
 use vortex::error::vortex_err;
 use vortex::expr::Expression;
 use vortex::expr::and_collect;
+use vortex::expr::byte_length;
+use vortex::expr::cast;
 use vortex::expr::col;
 use vortex::expr::get_item;
 use vortex::expr::is_not_null;
@@ -21,6 +25,7 @@ use vortex::expr::list_contains;
 use vortex::expr::lit;
 use vortex::expr::not;
 use vortex::expr::or_collect;
+use vortex::expr::root;
 use vortex::scalar::Scalar;
 use vortex::scalar_fn::ScalarFnVTableExt;
 use vortex::scalar_fn::fns::between::Between;
@@ -43,6 +48,7 @@ use crate::duckdb::ExpressionClass::BoundComparison;
 use crate::duckdb::ExpressionClass::BoundConjunction;
 use crate::duckdb::ExpressionClass::BoundConstant;
 use crate::duckdb::ExpressionClass::BoundRef;
+use crate::projection::DuckdbField;
 
 fn from_bound_str(value: &duckdb::ExpressionRef) -> VortexResult<String> {
     match value.as_class().vortex_expect("unknown class") {
@@ -169,6 +175,28 @@ pub fn can_push_expression(value: &duckdb::ExpressionRef) -> bool {
             op.children().all(can_push_expression)
         }
     }
+}
+
+pub fn try_from_projection_expression(
+    value: &duckdb::ExpressionRef,
+    field: &DuckdbField,
+) -> VortexResult<Option<Expression>> {
+    let Some(value) = value.as_class() else {
+        return Ok(None);
+    };
+    let ExpressionClass::BoundFunction(func) = value else {
+        return Ok(None);
+    };
+    Ok(match func.scalar_function.name() {
+        "strlen" => {
+            let col = byte_length(get_item(field.name.as_str(), root()));
+            // byte_length returns u64, strlen expects i64
+            let dtype = DType::Primitive(PType::I64, field.dtype.nullability());
+            let col = cast(col, dtype);
+            Some(col)
+        }
+        _ => None,
+    })
 }
 
 // If you want to add support for other expressions, also change
