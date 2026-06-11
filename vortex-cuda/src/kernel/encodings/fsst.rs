@@ -240,12 +240,9 @@ mod tests {
         let mut cuda_ctx = CudaSession::create_execution_ctx(&VortexSession::empty())
             .vortex_expect("failed to create execution context");
 
-        let varbin = VarBinArray::from_iter(strings, DType::Binary(nullability));
-        let compressor = fsst_train_compressor(&varbin);
-        let dtype = varbin.dtype().clone();
-        let len = varbin.len();
-        let fsst_array =
-            fsst_compress(&varbin, len, &dtype, &compressor, cuda_ctx.execution_ctx()).into_array();
+        let varbin = VarBinArray::from_iter(strings, DType::Binary(nullability)).into_array();
+        let compressor = fsst_train_compressor(varbin.clone(), cuda_ctx.execution_ctx())?;
+        let fsst_array = fsst_compress(varbin, &compressor, cuda_ctx.execution_ctx())?.into_array();
 
         let cpu_result = crate::canonicalize_cpu(fsst_array.clone())?;
         let gpu_result = FSSTExecutor
