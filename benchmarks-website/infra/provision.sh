@@ -611,9 +611,13 @@ NEXT STEPS:
 
 4. Migrations create the Postgres '${PG_MIGRATOR_ROLE}' (002) and
    '${PG_INGEST_ROLE}' (004) users; both OIDC roles' permission policies are
-   already scoped to those users. Apply 002 + 004 as the RDS master during the
-   one-time bootstrap (they create roles and grant on master-owned tables), after
-   which schema deploys run as '${PG_MIGRATOR_ROLE}'.
+   already scoped to those users. During the one-time bootstrap, apply EVERY
+   migration carrying the '-- migrate-schema: requires-superuser' marker as the
+   RDS master (currently 002/004/005, which create roles + grants, and 006/007,
+   which run DDL on the master-owned query_measurements table). The marker in
+   each file is authoritative; see benchmarks-website/migrations/README.md
+   'Bootstrap ordering' for the contract. After the bootstrap, unmarked schema
+   deploys run as '${PG_MIGRATOR_ROLE}'.
 
 =========================================================================
 EOF

@@ -31,8 +31,19 @@ use vortex_bench_migrate::verify::run_postgres_value_verify;
 use vortex_bench_server::family;
 use vortex_bench_server::schema::COMMITS_DDL;
 
-/// The authoritative Postgres schema, applied to the container at init.
-const SCHEMA_SQL: &str = include_str!("../../../migrations/001_initial_schema.sql");
+/// The Postgres schema applied to the container at init: the schema-shape
+/// migrations the loader touches -- the 001 base DDL, the 006 read-path
+/// migration (whose denormalized `query_measurements.commit_timestamp` column
+/// the loader's post-COPY denormalization UPDATE requires), and the 007
+/// covering-index swap (index-only, but kept so the container's index set
+/// matches prod's). The 002-005 role/grant migrations are deliberately
+/// omitted: they configure RDS auth, which a throwaway container neither has
+/// nor needs.
+const SCHEMA_SQL: &str = concat!(
+    include_str!("../../../migrations/001_initial_schema.sql"),
+    include_str!("../../../migrations/006_read_path_perf.sql"),
+    include_str!("../../../migrations/007_summary_covering_index.sql"),
+);
 
 /// Per-table row counts the fixture loads. Drives the count assertions.
 const FIXTURE_COUNTS: &[(&str, u64)] = &[
@@ -161,6 +172,25 @@ fn rehearsal_load_then_verify_is_clean() -> Result<()> {
             "target count for {table}"
         );
     }
+
+    // The loader denormalized `commit_timestamp` onto every `query_measurements`
+    // row (migration 006, the read path's latest-per-series sort key): no NULLs
+    // remain and each value equals the joined `commits.timestamp`.
+    let unstamped: i64 = client
+        .query_one(
+            "SELECT count(*) FROM query_measurements WHERE commit_timestamp IS NULL",
+            &[],
+        )?
+        .get(0);
+    assert_eq!(unstamped, 0, "rows missing denormalized commit_timestamp");
+    let mismatched: i64 = client
+        .query_one(
+            "SELECT count(*) FROM query_measurements q JOIN commits c USING (commit_sha)
+              WHERE q.commit_timestamp <> c.timestamp",
+            &[],
+        )?
+        .get(0);
+    assert_eq!(mismatched, 0, "denormalized commit_timestamp drifted");
     Ok(())
 }
 

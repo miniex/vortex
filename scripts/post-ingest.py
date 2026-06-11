@@ -670,17 +670,19 @@ def _insert_query_measurement(conn, mid_mod, r: dict) -> bool:
             query_idx, storage, engine, format,
             value_ns, all_runtimes_ns,
             peak_physical, peak_virtual, physical_delta, virtual_delta,
-            env_triple
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::bigint[], %s, %s, %s, %s, %s)
+            env_triple, commit_timestamp
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::bigint[], %s, %s, %s, %s, %s,
+                  (SELECT timestamp FROM commits WHERE commit_sha = %s))
         ON CONFLICT (measurement_id) DO UPDATE SET
-            commit_sha      = excluded.commit_sha,
-            value_ns        = excluded.value_ns,
-            all_runtimes_ns = excluded.all_runtimes_ns,
-            peak_physical   = excluded.peak_physical,
-            peak_virtual    = excluded.peak_virtual,
-            physical_delta  = excluded.physical_delta,
-            virtual_delta   = excluded.virtual_delta,
-            env_triple      = excluded.env_triple
+            commit_sha       = excluded.commit_sha,
+            value_ns         = excluded.value_ns,
+            all_runtimes_ns  = excluded.all_runtimes_ns,
+            peak_physical    = excluded.peak_physical,
+            peak_virtual     = excluded.peak_virtual,
+            physical_delta   = excluded.physical_delta,
+            virtual_delta    = excluded.virtual_delta,
+            env_triple       = excluded.env_triple,
+            commit_timestamp = excluded.commit_timestamp
         RETURNING (xmax = 0) AS inserted
         """,
         (
@@ -700,6 +702,10 @@ def _insert_query_measurement(conn, mid_mod, r: dict) -> bool:
             r.get("physical_delta"),
             r.get("virtual_delta"),
             r.get("env_triple"),
+            # The denormalized `commit_timestamp` (migration 006) is resolved from the
+            # `commits` row this same transaction upserted first, so the read path's
+            # latest-per-series summary never sees a NULL from this writer.
+            r["commit_sha"],
         ),
     )
 

@@ -16,8 +16,11 @@
  *
  * Behaviour-preservation notes (this is a substrate migration, DuckDB ->
  * Postgres):
- *  - `IS NOT DISTINCT FROM` gives `NULL == NULL` equality on the nullable
- *    `dataset_variant` / `scale_factor` dims, exactly as the DuckDB query did.
+ *  - Nullable-dim equality (`dataset_variant` / `scale_factor`) is rendered via
+ *    [`sargableDimEq`] as `col IS NULL` / `col = $n` per the concrete key's
+ *    build-time value, giving the same `NULL == NULL` semantics the DuckDB query
+ *    had while staying index-sargable (the earlier `IS NOT DISTINCT FROM` form
+ *    was correct but forced a per-dataset full scan at prod scale; PR-5.1.5).
  *  - `BIGINT` value columns (`value_ns`, `value_bytes`) are read `::float8` so
  *    node-postgres returns a JS `number` matching the Rust `value as f64` cast,
  *    rather than the bigint-as-string default.
@@ -103,6 +106,27 @@ class QueryParams {
     this.values.push(value);
     return `$${this.values.length}`;
   }
+}
+
+/**
+ * Render a sargable equality predicate for a nullable chart dimension. For a
+ * concrete chart key the dimension value is known at build time, so emit
+ * `col IS NULL` (null value) or `col = $n` (non-null) rather than the
+ * non-sargable `col IS NOT DISTINCT FROM $n`. The two forms are logically
+ * identical for a concrete key (`IS NOT DISTINCT FROM NULL` ≡ `IS NULL`; for a
+ * non-null value both match exactly that value and exclude NULL rows), but the
+ * specialized form lets Postgres seek the composite chart index
+ * (`idx_query_measurements_chart` and siblings) past the leading `dataset`
+ * column instead of heap-filtering every row in that dataset. This is the
+ * read-path-perf fix (PR-5.1.5): at the full prod seed the non-sargable form
+ * degraded each chart query to a per-dataset full scan.
+ *
+ * Binds the value into `params` ONLY in the non-null branch; callers must splice
+ * the returned fragment in textual order so the positional placeholders stay
+ * consistent with the bind sequence.
+ */
+function sargableDimEq(params: QueryParams, column: string, value: string | null): string {
+  return value === null ? `${column} IS NULL` : `${column} = ${params.bind(value)}`;
 }
 
 /**
@@ -313,8 +337,8 @@ async function collectQueryChart(
          FROM query_measurements q2
          JOIN commits c2 ON c2.commit_sha = q2.commit_sha
         WHERE q2.dataset = ${p.bind(dataset)}
-          AND q2.dataset_variant IS NOT DISTINCT FROM ${p.bind(dataset_variant)}
-          AND q2.scale_factor    IS NOT DISTINCT FROM ${p.bind(scale_factor)}
+          AND ${sargableDimEq(p, 'q2.dataset_variant', dataset_variant)}
+          AND ${sargableDimEq(p, 'q2.scale_factor', scale_factor)}
           AND q2.storage = ${p.bind(storage)}
           AND q2.query_idx = ${p.bind(query_idx)}`,
     window,
@@ -332,8 +356,8 @@ async function collectQueryChart(
       FROM query_measurements q
       JOIN commits c USING (commit_sha)
      WHERE q.dataset = ${params.bind(dataset)}
-       AND q.dataset_variant IS NOT DISTINCT FROM ${params.bind(dataset_variant)}
-       AND q.scale_factor    IS NOT DISTINCT FROM ${params.bind(scale_factor)}
+       AND ${sargableDimEq(params, 'q.dataset_variant', dataset_variant)}
+       AND ${sargableDimEq(params, 'q.scale_factor', scale_factor)}
        AND q.storage = ${params.bind(storage)}
        AND q.query_idx = ${params.bind(query_idx)}${factWindowFilter(params, window)}
      ORDER BY c.timestamp, q.engine, q.format
@@ -371,7 +395,7 @@ async function collectCompressionTimeChart(
          FROM compression_times t2
          JOIN commits c2 ON c2.commit_sha = t2.commit_sha
         WHERE t2.dataset = ${p.bind(dataset)}
-          AND t2.dataset_variant IS NOT DISTINCT FROM ${p.bind(dataset_variant)}`,
+          AND ${sargableDimEq(p, 't2.dataset_variant', dataset_variant)}`,
     window,
   );
   if (seeded.commits.length === 0) {
@@ -387,7 +411,7 @@ async function collectCompressionTimeChart(
       FROM compression_times t
       JOIN commits c USING (commit_sha)
      WHERE t.dataset = ${params.bind(dataset)}
-       AND t.dataset_variant IS NOT DISTINCT FROM ${params.bind(dataset_variant)}${factWindowFilter(params, window)}
+       AND ${sargableDimEq(params, 't.dataset_variant', dataset_variant)}${factWindowFilter(params, window)}
      ORDER BY c.timestamp, t.format, t.op
   `;
   const rows = (await getPool().query<CompressionTimeRow>(text, params.values)).rows;
@@ -419,7 +443,7 @@ async function collectCompressionSizeChart(
          FROM compression_sizes s2
          JOIN commits c2 ON c2.commit_sha = s2.commit_sha
         WHERE s2.dataset = ${p.bind(dataset)}
-          AND s2.dataset_variant IS NOT DISTINCT FROM ${p.bind(dataset_variant)}`,
+          AND ${sargableDimEq(p, 's2.dataset_variant', dataset_variant)}`,
     window,
   );
   if (seeded.commits.length === 0) {
@@ -435,7 +459,7 @@ async function collectCompressionSizeChart(
       FROM compression_sizes s
       JOIN commits c USING (commit_sha)
      WHERE s.dataset = ${params.bind(dataset)}
-       AND s.dataset_variant IS NOT DISTINCT FROM ${params.bind(dataset_variant)}${factWindowFilter(params, window)}
+       AND ${sargableDimEq(params, 's.dataset_variant', dataset_variant)}${factWindowFilter(params, window)}
      ORDER BY c.timestamp, s.format
   `;
   const rows = (await getPool().query<FormatRow>(text, params.values)).rows;
@@ -665,17 +689,30 @@ function compareGroupSortKey(a: string, b: string): number {
 }
 
 /**
- * Render a query-group display name in v2's shape, the port of
- * `groups.rs::group_name_query`:
+ * Render a query-group display name in v2's shape. Ports
+ * `groups.rs::group_name_query` and additionally restores v2's two flat group
+ * names that the v3 source dropped (PR-5.0.5, v2-fidelity):
  *  - `tpch` + storage + scale_factor -> `TPC-H (NVMe) (SF=1)`,
  *  - `tpcds` + storage + scale_factor -> `TPC-DS (NVMe) (SF=1)`,
  *  - `clickbench` -> `Clickbench`,
+ *  - `statpopgen` -> `Statistical and Population Genetics` (v2 `src/config.js`),
+ *  - `polarsignals` -> `PolarSignals Profiling` (v2 `src/config.js`),
  *  - anything else -> the legacy `dataset[/variant] sf=N [storage]` shape.
  *
- * A non-null `datasetVariant` appends ` / variant` to the tpch/tpcds base name,
- * disambiguating ingested variants that v2's flat list collapsed.
+ * The `statpopgen`/`polarsignals` names are exactly the keys `groupDescription`
+ * (`descriptions.ts`) uses to attach their editorial blurbs, which would
+ * otherwise stay dead because the legacy fallback name never matches. The other
+ * five preserved-v3 parity quirks are intentionally kept (Phase-5 Decision C).
+ *
+ * A non-null `datasetVariant` appends ` / variant` to the matched base name,
+ * disambiguating ingested variants that v2's flat list collapsed. In practice
+ * `statpopgen`/`polarsignals` carry no variant, so they render as the flat v2
+ * name and their description attaches.
+ *
+ * Exported only so a Docker-free unit test can pin the v2-name mapping
+ * (`groups.test.ts`); production callers reach it via `collectGroups`.
  */
-function groupNameQuery(
+export function groupNameQuery(
   dataset: string,
   datasetVariant: string | null,
   scaleFactor: string | null,
@@ -689,6 +726,10 @@ function groupNameQuery(
     base = `TPC-DS (${storageLabel}) (SF=${scaleFactor})`;
   } else if (dataset === 'clickbench') {
     base = 'Clickbench';
+  } else if (dataset === 'statpopgen') {
+    base = 'Statistical and Population Genetics';
+  } else if (dataset === 'polarsignals') {
+    base = 'PolarSignals Profiling';
   }
   if (base !== null) {
     return datasetVariant !== null ? `${base} / ${datasetVariant}` : base;
@@ -715,16 +756,124 @@ type QueryGroupRow = {
 };
 
 /**
+ * The five discovery dimensions of `query_measurements`, in the column order of
+ * `idx_query_measurements_chart`. Doubles as the probes' ORDER BY: spelling out
+ * the full index prefix is what lets the planner prove each probe is an ordered
+ * index descent even under `IS NULL` pins (see `collectQuerySummary` in
+ * `summary.ts` for the pathkey rationale).
+ */
+const DISCOVERY_COLS = 'q.dataset, q.dataset_variant, q.scale_factor, q.storage, q.query_idx';
+
+/**
+ * The successor probe of the discovery skip scan: given the current tuple `s`,
+ * find the next distinct `(dataset, dataset_variant, scale_factor, storage,
+ * query_idx)` tuple in index order (ASC, NULLS LAST on the two nullable
+ * columns). A single row comparison cannot express this (it would not be a
+ * btree index qual past column 1, and NULL components poison it), so the
+ * successor is a `UNION ALL` of single-inequality branches that partition the
+ * tuples greater than `s` -- deepest level first (next query_idx within the
+ * same group), then next storage, scale_factor, dataset_variant, dataset.
+ * Every qualifying row satisfies exactly one branch and all of branch N's rows
+ * precede branch N+1's in tuple order, so the successor is the row from the
+ * lowest-numbered non-empty branch: each branch carries a constant `br`
+ * ordinal and the caller selects via `ORDER BY br LIMIT 1`, a SQL-guaranteed
+ * choice rather than a reliance on Append's (undocumented) syntactic arm
+ * order. See `collectQuerySummary` for the same construction and its cost
+ * note.
+ *
+ * The nullable levels (scale_factor, dataset_variant) follow NULLS LAST order
+ * with two branches each: `col > s.col` walks the non-NULL values (vacuously
+ * empty when `s.col` is NULL, since a NULL comparison is never true), then
+ * `col IS NULL AND s.col IS NOT NULL` steps from the last non-NULL value into
+ * the NULL partition; the `s.col IS NOT NULL` guard keeps the NULL partition
+ * from succeeding itself forever. Equality pins on a nullable column likewise
+ * need both forms (`= s.col` / `IS NULL AND s.col IS NULL`) because
+ * `IS NOT DISTINCT FROM` is not index-sargable; the dead combination returns
+ * no rows at the btree layer for free. Every branch is a pure O(log n) descent
+ * of `idx_query_measurements_chart`.
+ */
+function discoverySuccessorSql(): string {
+  const variantPins = [
+    'q.dataset_variant = s.dataset_variant',
+    'q.dataset_variant IS NULL AND s.dataset_variant IS NULL',
+  ];
+  const scalePins = [
+    'q.scale_factor = s.scale_factor',
+    'q.scale_factor IS NULL AND s.scale_factor IS NULL',
+  ];
+  const branches: string[] = [];
+  for (const variantPin of variantPins) {
+    for (const scalePin of scalePins) {
+      branches.push(
+        `q.dataset = s.dataset AND ${variantPin} AND ${scalePin}
+              AND q.storage = s.storage AND q.query_idx > s.query_idx`,
+      );
+    }
+  }
+  for (const variantPin of variantPins) {
+    for (const scalePin of scalePins) {
+      branches.push(
+        `q.dataset = s.dataset AND ${variantPin} AND ${scalePin} AND q.storage > s.storage`,
+      );
+    }
+  }
+  for (const variantPin of variantPins) {
+    branches.push(`q.dataset = s.dataset AND ${variantPin} AND q.scale_factor > s.scale_factor`);
+  }
+  for (const variantPin of variantPins) {
+    branches.push(
+      `q.dataset = s.dataset AND ${variantPin}
+            AND q.scale_factor IS NULL AND s.scale_factor IS NOT NULL`,
+    );
+  }
+  branches.push('q.dataset = s.dataset AND q.dataset_variant > s.dataset_variant');
+  branches.push(
+    'q.dataset = s.dataset AND q.dataset_variant IS NULL AND s.dataset_variant IS NOT NULL',
+  );
+  branches.push('q.dataset > s.dataset');
+  return branches
+    .map(
+      (branch, i) => `(SELECT ${i + 1} AS br, ${DISCOVERY_COLS}
+             FROM query_measurements q
+            WHERE ${branch}
+            ORDER BY ${DISCOVERY_COLS}
+            LIMIT 1)`,
+    )
+    .join('\n          UNION ALL\n          ');
+}
+
+/**
  * Distinct query groups, one per `(dataset, dataset_variant, scale_factor,
  * storage)` tuple, each with one `Q{idx}` chart link per query index. Rows
  * arrive grouped by the tuple (ORDER BY matches `groups.rs`), so a new group
  * starts whenever the tuple changes.
+ *
+ * The distinct tuples come from a recursive-CTE skip scan (anchor = first index
+ * tuple, step = [`discoverySuccessorSql`]) instead of a `GROUP BY` that scans
+ * all of `query_measurements` (~1.3s at the prod seed vs ~ms; PR-5.1.5, the
+ * same loose-index-scan treatment as `collectQuerySummary`). The skip scan
+ * walks `idx_query_measurements_chart` in its native order (NULLS LAST), so the
+ * outer ORDER BY re-sorts the few hundred result tuples into the v3-parity
+ * NULLS FIRST order the group builder expects.
  */
 async function collectQueryGroups(): Promise<Group[]> {
   const text = `
+    WITH RECURSIVE tuples AS (
+      (SELECT ${DISCOVERY_COLS}
+         FROM query_measurements q
+        ORDER BY ${DISCOVERY_COLS}
+        LIMIT 1)
+      UNION ALL
+      SELECT nxt.dataset, nxt.dataset_variant, nxt.scale_factor, nxt.storage, nxt.query_idx
+        FROM tuples s
+        CROSS JOIN LATERAL (
+          ${discoverySuccessorSql()}
+          ORDER BY br
+          LIMIT 1
+        ) nxt
+    )
     SELECT dataset, dataset_variant, scale_factor, storage, query_idx
-      FROM query_measurements
-     GROUP BY dataset, dataset_variant, scale_factor, storage, query_idx
+      FROM tuples
      ORDER BY dataset, dataset_variant NULLS FIRST,
               scale_factor NULLS FIRST, storage, query_idx
   `;
@@ -901,17 +1050,59 @@ function discoverGroups(groupKind: GroupKind): Promise<Group[]> {
 }
 
 /**
+ * Bound on how many per-group summary queries run concurrently in
+ * [`collectGroups`] (PR-5.1.5 fix e). Kept at the `BENCH_DB_POOL_MAX` default so
+ * the in-flight summaries match the pool size; if the pool is smaller the excess
+ * simply queues on `pg`'s acquire list (no error), and if larger the cap still
+ * holds. Overlapping the N+1 summaries is what turns the sequential
+ * sum-of-summaries into roughly the slowest-summary wall-clock.
+ */
+const SUMMARY_CONCURRENCY = 8;
+
+/**
+ * Map `items` through `fn` with at most `limit` promises in flight, preserving
+ * input order in the result. Used to overlap the independent per-group summary
+ * queries across the pool without firing all N at once.
+ */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const workerCount = Math.max(1, Math.min(limit, items.length));
+  const workers = Array.from({ length: workerCount }, async () => {
+    for (;;) {
+      // `next++` is atomic here: single-threaded JS guarantees no await runs
+      // between the read and the increment.
+      const i = next++;
+      if (i >= items.length) {
+        return;
+      }
+      results[i] = await fn(items[i], i);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+/**
  * Collect every group + chart link derivable from the data, the shared
  * implementation behind `GET /api/groups`. Iterates the [`FAMILIES`] registry
  * in order, attaches each group's summary + description, then applies the
  * canonical [`GROUP_ORDER`].
  */
 export async function collectGroups(): Promise<Group[]> {
-  const groups: Group[] = [];
-  for (const family of FAMILIES) {
-    groups.push(...(await discoverGroups(family.groupKind)));
-  }
-  for (const group of groups) {
+  // Discover families in parallel -- each scans a different fact table, so they
+  // overlap rather than running one after another (PR-5.1.5 fix e). Concat
+  // preserves the FAMILIES registry order the final sort expects.
+  const perFamily = await Promise.all(FAMILIES.map((family) => discoverGroups(family.groupKind)));
+  const groups = perFamily.flat();
+  // Attach each group's summary + description with bounded concurrency instead
+  // of the prior sequential await, which serialized the N+1 summary cost across
+  // ~64 groups (PR-5.1.5 fix e).
+  await mapWithConcurrency(groups, SUMMARY_CONCURRENCY, async (group) => {
     const key = groupKeyFromSlug(group.slug);
     const summary = await collectGroupSummary(key, group.charts);
     if (summary !== null) {
@@ -921,7 +1112,7 @@ export async function collectGroups(): Promise<Group[]> {
     if (description !== null) {
       group.description = description;
     }
-  }
+  });
   // Sort by `GROUP_ORDER` position, then by group name as the tiebreaker, so
   // groups outside `GROUP_ORDER` share the trailing bucket and order
   // alphabetically by name, matching the Rust `(usize, &str)` `group_sort_key`.
@@ -993,18 +1184,57 @@ export async function collectGroupCharts(
 export async function collectFilterUniverse(): Promise<FilterUniverse> {
   // The two queries are independent; run them on parallel pool connections
   // since this collector sits on every force-dynamic page render.
+  //
+  // The `query_measurements` DISTINCTs are recursive-CTE skip scans over the 006
+  // single-column indexes (`idx_query_measurements_engine` / `_format`) instead
+  // of full index scans (~460ms each at the prod seed vs ~ms; PR-5.1.5, the same
+  // loose-index-scan treatment as `collectQuerySummary` -- see `summary.ts` for
+  // the mechanics). One descent per distinct value: the anchor takes the
+  // smallest, each step seeks the first value strictly greater than the last.
+  // `engine`/`format` are NOT NULL by schema; the `IS NOT NULL` anchor guards
+  // are kept so an all-NULL column would yield `[]` rather than `[null]`,
+  // preserving the prior queries' explicit-filter semantics. The three small
+  // fact tables (a few thousand rows each) stay plain DISTINCT arms; `UNION`
+  // dedupes across all four sources.
   const [engines, formats] = await Promise.all([
     getPool().query<{ value: string }>(
-      `SELECT DISTINCT engine AS value FROM query_measurements
-        WHERE engine IS NOT NULL`,
+      `WITH RECURSIVE engines AS (
+        (SELECT q.engine AS value FROM query_measurements q
+          WHERE q.engine IS NOT NULL
+          ORDER BY q.engine
+          LIMIT 1)
+        UNION ALL
+        SELECT nxt.value
+          FROM engines e
+          CROSS JOIN LATERAL (
+            SELECT q.engine AS value FROM query_measurements q
+             WHERE q.engine > e.value
+             ORDER BY q.engine
+             LIMIT 1
+          ) nxt
+      )
+      SELECT value FROM engines`,
     ),
     getPool().query<{ value: string }>(
-      `SELECT DISTINCT value FROM (
-              SELECT format AS value FROM query_measurements   WHERE format IS NOT NULL
-        UNION SELECT format AS value FROM compression_times    WHERE format IS NOT NULL
-        UNION SELECT format AS value FROM compression_sizes    WHERE format IS NOT NULL
-        UNION SELECT format AS value FROM random_access_times  WHERE format IS NOT NULL
-       ) AS f`,
+      `WITH RECURSIVE qm_formats AS (
+        (SELECT q.format AS value FROM query_measurements q
+          WHERE q.format IS NOT NULL
+          ORDER BY q.format
+          LIMIT 1)
+        UNION ALL
+        SELECT nxt.value
+          FROM qm_formats f
+          CROSS JOIN LATERAL (
+            SELECT q.format AS value FROM query_measurements q
+             WHERE q.format > f.value
+             ORDER BY q.format
+             LIMIT 1
+          ) nxt
+      )
+      SELECT value FROM qm_formats
+      UNION SELECT format AS value FROM compression_times    WHERE format IS NOT NULL
+      UNION SELECT format AS value FROM compression_sizes    WHERE format IS NOT NULL
+      UNION SELECT format AS value FROM random_access_times  WHERE format IS NOT NULL`,
     ),
   ]);
   return {

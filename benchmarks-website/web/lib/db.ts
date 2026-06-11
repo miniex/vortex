@@ -83,7 +83,7 @@ function readConfig(): DbConfig {
     user: requireEnv('BENCH_DB_USER'),
     region: process.env.BENCH_DB_REGION ?? '',
     ssl: resolveSsl(),
-    poolMax: Number(process.env.BENCH_DB_POOL_MAX ?? '4'),
+    poolMax: Number(process.env.BENCH_DB_POOL_MAX ?? '8'),
     staticPassword: staticPassword === '' ? undefined : staticPassword,
   };
 }

@@ -15,10 +15,15 @@
 //!
 //! TLS: the local rehearsal (PR-3.3 / PR-3.4) connects with `NoTls`; the prod
 //! load (PR-5.0) uses `--ca-cert` to trust the RDS CA bundle and verify the host
-//! (verify-full-equivalent). The verify-full path cannot be exercised without a
-//! live RDS, so it is covered by compile + the prod runbook, not an automated
-//! test. The DuckDB-read + COPY-text formatting -- where the value-fidelity risk
-//! lives -- is covered by the embedded-DuckDB unit tests below (no Docker).
+//! (verify-full-equivalent), via rustls. rustls rather than native-tls because
+//! the RDS leaf certificate carries no `serverAuth` Extended Key Usage, which
+//! macOS Secure Transport (native-tls's macOS backend) rejects outright;
+//! rustls/webpki treats a missing EKU as unrestricted (matching OpenSSL/libpq),
+//! so the chain validates on every OS. The verify-full path cannot be exercised
+//! without a live RDS, so it is covered by compile + the prod runbook, not an
+//! automated test. The DuckDB-read + COPY-text formatting -- where the
+//! value-fidelity risk lives -- is covered by the embedded-DuckDB unit tests
+//! below (no Docker).
 
 use std::io::Write as _;
 use std::path::Path;
@@ -218,8 +223,11 @@ impl std::fmt::Display for LoadSummary {
 /// TLS connection (the RDS CA for the prod load); when `None` the connection is
 /// plaintext (`NoTls`, the local rehearsal).
 ///
-/// The target schema (`migrations/001_initial_schema.sql`) must already be
-/// applied: `load` only `COPY`s into the existing tables and never runs DDL.
+/// The target schema must already be applied -- `migrations/001_initial_schema.sql`
+/// plus `006_read_path_perf.sql`, whose denormalized
+/// `query_measurements.commit_timestamp` column the post-COPY denormalization
+/// UPDATE below writes: `load` only `COPY`s into the existing tables and never
+/// runs DDL.
 pub fn load(duckdb_path: &Path, dsn: &str, ca_cert: Option<&Path>) -> Result<LoadSummary> {
     let config = duckdb::Config::default()
         .access_mode(duckdb::AccessMode::ReadOnly)
@@ -244,6 +252,26 @@ pub fn load(duckdb_path: &Path, dsn: &str, ca_cert: Option<&Path>) -> Result<Loa
         info!(table = spec.name, rows, "bulk-loaded table");
         per_table.push((spec.name, rows));
     }
+
+    // Populate the denormalized `query_measurements.commit_timestamp` (migration
+    // 006, the read path's latest-per-series sort key). The v3 DuckDB source has
+    // no such column, so it cannot ride the COPY's 1:1 column mapping; it is
+    // derived here from the already-loaded `commits` dim (`TABLE_SPECS` loads
+    // `commits` first), inside the same all-or-nothing transaction. `IS DISTINCT
+    // FROM` (rather than `IS NULL`) makes the stamp drift-repairing as well as
+    // NULL-filling, the same repair form migrations/README.md documents for
+    // operational re-stamping.
+    let stamped = tx
+        .execute(
+            "UPDATE query_measurements q
+                SET commit_timestamp = c.timestamp
+               FROM commits c
+              WHERE c.commit_sha = q.commit_sha
+                AND q.commit_timestamp IS DISTINCT FROM c.timestamp",
+            &[],
+        )
+        .context("denormalizing commit_timestamp onto query_measurements")?;
+    info!(rows = stamped, "denormalized commit_timestamp");
 
     tx.commit().context("committing the load transaction")?;
     Ok(LoadSummary { per_table })
@@ -289,19 +317,37 @@ pub(crate) fn connect_postgres(dsn: &str, ca_cert: Option<&Path>) -> Result<post
     match ca_cert {
         None => postgres::Client::connect(dsn, postgres::NoTls).context("connecting to Postgres"),
         Some(ca) => {
+            // Install a process-default rustls crypto provider once. `install_default`
+            // errors if one is already installed (for example a second
+            // `connect_postgres` call within the same process), which is harmless
+            // here, so the result is intentionally ignored.
+            let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
             let pem = std::fs::read(ca)
                 .with_context(|| format!("reading CA certificate {}", ca.display()))?;
-            let cert = native_tls::Certificate::from_pem(&pem)
-                .context("parsing the CA certificate PEM")?;
-            // Host verification stays on (native-tls default); adding the RDS CA to
-            // the trust set makes the RDS server cert chain validate. Together that
-            // is verify-full-equivalent. The DSN should request `sslmode=require`
+            // The RDS CA file is a bundle (a root per signing algorithm); add every
+            // certificate it contains to the trust set. Host verification is on by
+            // construction -- the default `WebPkiServerVerifier` checks the leaf SAN
+            // against the connection host -- so trusting the RDS roots is
+            // verify-full-equivalent. The DSN should request `sslmode=require`
             // (tokio-postgres understands prefer/require/disable, not verify-full).
-            let connector = native_tls::TlsConnector::builder()
-                .add_root_certificate(cert)
-                .build()
-                .context("building the TLS connector")?;
-            let connector = postgres_native_tls::MakeTlsConnector::new(connector);
+            let mut roots = rustls::RootCertStore::empty();
+            for cert in rustls_pemfile::certs(&mut pem.as_slice()) {
+                let cert = cert.context("parsing a certificate from the CA PEM bundle")?;
+                roots
+                    .add(cert)
+                    .context("adding a CA certificate to the rustls root store")?;
+            }
+            // Fail loud and early if the `--ca-cert` file held no certificates (an
+            // empty file, a key-only PEM, or the wrong path): an empty root store
+            // builds fine but then rejects every server cert with an opaque
+            // handshake error, which is a confusing way to learn the bundle is wrong.
+            if roots.is_empty() {
+                bail!("no certificates found in the CA bundle {}", ca.display());
+            }
+            let config = rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth();
+            let connector = tokio_postgres_rustls::MakeRustlsConnect::new(config);
             postgres::Client::connect(dsn, connector).context("connecting to Postgres over TLS")
         }
     }
