@@ -10,12 +10,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Chart } from '@/components/Chart';
 import { FETCH_TIMEOUT_MS } from '@/lib/chart-format';
 import { fullHistoryQueue } from '@/lib/chart-store';
+import { loadChartJs } from '@/lib/chart-js';
 
-// Mock Chart.js construction to a NEVER-RESOLVING loader: maybeConstruct awaits
-// it forever and never reaches `new Chart(...)`, so the fetch-orchestration path
-// runs to completion without constructing a chart in jsdom.
+// Mock Chart.js construction to a NEVER-RESOLVING loader by default:
+// maybeConstruct awaits it forever and never reaches `new Chart(...)`, so the
+// fetch-orchestration path runs to completion without constructing a chart in
+// jsdom. Tests that need construction to complete override with mockResolvedValueOnce.
 vi.mock('@/lib/chart-js', () => ({
-  loadChartJs: () => new Promise(() => {}),
+  loadChartJs: vi.fn(() => new Promise(() => {})),
 }));
 
 // The payloads flow through the fetch stub as `unknown`, so they need not be
@@ -543,6 +545,43 @@ describe('Chart opt-in full-history loading', () => {
       });
       const errorEl = container.querySelector('.chart-error');
       expect(errorEl).not.toBeNull();
+      expect(container.querySelector('.chart-placeholder')).toBeNull();
+    });
+
+    it('removes .chart-placeholder once the chart successfully constructs', async () => {
+      // Override the default never-resolving loader with a stub that resolves to
+      // a minimal Chart constructor, letting maybeConstruct run to completion and
+      // call setConstructed(true). The stub stores the config's labels/datasets so
+      // the post-construction helpers (rebuildVisibleAndUpdate, bindRangeStrip,
+      // applyFilters) can read chart.data and chart.options without throwing.
+      class StubChart {
+        data: { labels: unknown[]; datasets: unknown[] };
+        options: Record<string, unknown>;
+        constructor(
+          _canvas: HTMLCanvasElement,
+          config: {
+            data: { labels: unknown[]; datasets: unknown[] };
+            options: Record<string, unknown>;
+          },
+        ) {
+          this.data = { labels: config.data.labels ?? [], datasets: config.data.datasets ?? [] };
+          this.options = config.options ?? {};
+        }
+        update(): void {}
+        destroy(): void {}
+      }
+      vi.mocked(loadChartJs).mockResolvedValueOnce(StubChart as never);
+
+      await renderOpenGroup();
+      // renderOpenGroup already flushed 6 microtasks for the bundle-404 and the
+      // per-chart fetch. Construction (loadChartJs await + new StubChart + React
+      // state commit) adds several more microtask hops; flush generously so
+      // setConstructed(true) and the React re-render complete before asserting.
+      await act(async () => {
+        for (let i = 0; i < 10; i++) {
+          await Promise.resolve();
+        }
+      });
       expect(container.querySelector('.chart-placeholder')).toBeNull();
     });
   });
