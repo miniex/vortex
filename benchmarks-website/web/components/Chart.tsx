@@ -22,6 +22,7 @@ import {
   DEFAULT_VISIBLE,
   escapeHtml,
   FETCH_N,
+  FETCH_TIMEOUT_MS,
   firstLine,
   formatDisplayValue,
   HOVER_DWELL_MS,
@@ -119,6 +120,11 @@ interface CardState {
   initialFetchEntry: QueueEntry | null;
   fullFetchEntry: QueueEntry | null;
   fullFetchPending: Promise<void> | null;
+  /** The in-flight `?n=100` fetch's per-fetch aborter; lets a group close or
+   * destroy cancel it without aborting the controller-lifetime `aborter`. */
+  initialFetchController: AbortController | null;
+  /** The in-flight `?n=all` fetch's per-fetch aborter; same role as above. */
+  fullFetchController: AbortController | null;
   /** True once this card has rendered a bounded window (so the chip is shown);
    * a chart born complete never sets it and shows no chip. */
   everWindowed: boolean;
@@ -396,6 +402,8 @@ class ChartController {
       initialFetchEntry: null,
       fullFetchEntry: null,
       fullFetchPending: null,
+      initialFetchController: null,
+      fullFetchController: null,
       everWindowed: false,
       chipError: false,
       hovering: false,
@@ -459,17 +467,41 @@ class ChartController {
       this.cb.setLoading(true);
     }
     const url = `/api/chart/${encodeURIComponent(this.slug)}?n=${encodeURIComponent(CHART_FETCH_N)}`;
+    const fc = new AbortController();
+    state.initialFetchController = fc;
+    // Bridge the controller-lifetime aborter to this per-fetch controller so
+    // `destroy()` cancels the in-flight request. `{ once: true }` self-removes
+    // the listener after a single abort; the `finally` removes it on the no-abort
+    // path. Propagate the parent's reason so a destroy reads as `AbortError`.
+    const onParentAbort = (): void => fc.abort(this.aborter.signal.reason);
+    this.aborter.signal.addEventListener('abort', onParentAbort, { once: true });
+    if (this.aborter.signal.aborted) {
+      fc.abort(this.aborter.signal.reason);
+    }
     const entry = hydrationQueue.schedule(async () => {
-      const r = await fetch(url, { headers: { accept: 'application/json' } });
-      if (!r.ok) {
-        throw new Error(r.status === 404 ? 'not found' : `HTTP ${r.status}`);
+      // The timeout starts when the task actually runs (not while queued), so it
+      // measures fetch duration, not queue wait. A `TimeoutError` reason lets the
+      // catch tell a timeout apart from a close/destroy `AbortError`.
+      const timer = setTimeout(
+        () => fc.abort(new DOMException('Fetch timed out', 'TimeoutError')),
+        FETCH_TIMEOUT_MS,
+      );
+      try {
+        const r = await fetch(url, { headers: { accept: 'application/json' }, signal: fc.signal });
+        if (!r.ok) {
+          throw new Error(r.status === 404 ? 'not found' : `HTTP ${r.status}`);
+        }
+        return (await r.json()) as ChartResponse;
+      } finally {
+        clearTimeout(timer);
+        this.aborter.signal.removeEventListener('abort', onParentAbort);
       }
-      return (await r.json()) as ChartResponse;
     }, priority);
     state.initialFetchEntry = entry;
     return entry.promise.then(
       (raw) => {
         state.initialFetchEntry = null;
+        state.initialFetchController = null;
         if (state.disposed) {
           return;
         }
@@ -497,11 +529,23 @@ class ChartController {
       },
       (err: unknown) => {
         state.initialFetchEntry = null;
+        state.initialFetchController = null;
         if (state.disposed) {
           return;
         }
         this.cb.setLoading(false);
-        const message = err instanceof Error ? err.message : 'unknown error';
+        // A close/destroy cancellation aborts with `AbortError`: stay silent, the
+        // card re-hydrates on reopen. A timeout (`TimeoutError`) or a genuine
+        // network/HTTP failure surfaces the error indicator.
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          return;
+        }
+        const message =
+          err instanceof DOMException && err.name === 'TimeoutError'
+            ? 'timed out'
+            : err instanceof Error
+              ? err.message
+              : 'unknown error';
         this.cb.setError(`failed to load: ${message}`);
       },
     );
@@ -546,15 +590,31 @@ class ChartController {
       return state.fullFetchPending ?? Promise.resolve();
     }
     const url = `/api/chart/${encodeURIComponent(this.slug)}?n=${encodeURIComponent(FETCH_N)}`;
+    const fc = new AbortController();
+    state.fullFetchController = fc;
+    const onParentAbort = (): void => fc.abort(this.aborter.signal.reason);
+    this.aborter.signal.addEventListener('abort', onParentAbort, { once: true });
+    if (this.aborter.signal.aborted) {
+      fc.abort(this.aborter.signal.reason);
+    }
     const entry = fullHistoryQueue.schedule(async () => {
-      const r = await fetch(url, { headers: { accept: 'application/json' } });
-      if (r.status === 404) {
-        return null;
+      const timer = setTimeout(
+        () => fc.abort(new DOMException('Fetch timed out', 'TimeoutError')),
+        FETCH_TIMEOUT_MS,
+      );
+      try {
+        const r = await fetch(url, { headers: { accept: 'application/json' }, signal: fc.signal });
+        if (r.status === 404) {
+          return null;
+        }
+        if (!r.ok) {
+          throw new Error(`HTTP ${r.status}`);
+        }
+        return (await r.json()) as ChartResponse;
+      } finally {
+        clearTimeout(timer);
+        this.aborter.signal.removeEventListener('abort', onParentAbort);
       }
-      if (!r.ok) {
-        throw new Error(`HTTP ${r.status}`);
-      }
-      return (await r.json()) as ChartResponse;
     }, priority);
     state.fullFetchEntry = entry;
     state.fullFetchPending = entry.promise
@@ -575,6 +635,12 @@ class ChartController {
         }
       })
       .catch((err: unknown) => {
+        state.fullFetchController = null;
+        // A close/destroy cancellation is silent; a timeout or genuine failure
+        // leaves the chip's retry affordance (chipError) so the user can re-try.
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          return;
+        }
         // Quiet: the latest-100 payload is still usable. Surface to the console
         // for debugging; the chip exposes the retry affordance.
         console.warn('bench: full history fetch failed', err);
@@ -582,6 +648,7 @@ class ChartController {
       })
       .then(() => {
         state.fullFetchEntry = null;
+        state.fullFetchController = null;
         state.fullFetchPending = null;
         this.syncWindowChip();
       });
@@ -1457,6 +1524,16 @@ class ChartController {
         !seriesPassesFilter(ds.benchMeta, global.active, global.universe);
     }
     chart.update('none');
+  }
+
+  /** Cancel any in-flight `?n=100` / `?n=all` request WITHOUT tearing down the
+   * controller, so closing a group (or its IO disconnect) frees server capacity
+   * and stops open/close from piling requests up. A reopen re-issues the fetch.
+   * The aborts reject the in-flight promises with `AbortError`, which the fetch
+   * catch paths treat as a silent cancellation. */
+  abortInFlightFetches(): void {
+    this.state.initialFetchController?.abort();
+    this.state.fullFetchController?.abort();
   }
 
   /** Tear down this controller: destroy the chart, remove every DOM listener

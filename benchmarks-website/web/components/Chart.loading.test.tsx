@@ -318,4 +318,71 @@ describe('Chart opt-in full-history loading', () => {
     expect(chip?.hasAttribute('hidden')).toBe(true);
     expect(chip?.dataset.state).not.toBe('windowed');
   });
+
+  describe('PR-5.0.95 fetch resilience: timeout + abort', () => {
+    // A fetch stub whose `?n=100` response never resolves on its own but DOES
+    // reject when its AbortSignal fires, so timeout/destroy aborts are observable.
+    // Returns the captured signals for assertions.
+    function stubAbortableWindowFetch(): { signals: AbortSignal[] } {
+      const signals: AbortSignal[] = [];
+      vi.stubGlobal('fetch', (url: string | URL, init?: { signal?: AbortSignal }) => {
+        const u = String(url);
+        fetchCalls.push(u);
+        const signal = init?.signal;
+        if (signal) {
+          signals.push(signal);
+        }
+        return new Promise<Response>((_resolve, reject) => {
+          signal?.addEventListener('abort', () => {
+            reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+          });
+        });
+      });
+      return { signals };
+    }
+
+    it('passes an AbortSignal into the window fetch', async () => {
+      const { signals } = stubAbortableWindowFetch();
+      await renderOpenGroup();
+      expect(signals.length).toBeGreaterThanOrEqual(1);
+      expect(signals[0].aborted).toBe(false);
+    });
+
+    it('aborts a stalled window fetch at FETCH_TIMEOUT_MS and shows an error', async () => {
+      vi.useFakeTimers();
+      const { signals } = stubAbortableWindowFetch();
+      await renderOpenGroup();
+      expect(signals[0].aborted).toBe(false);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30000);
+      });
+      expect(signals[0].aborted).toBe(true);
+      const err = container.querySelector('.chart-error');
+      expect(err).not.toBeNull();
+      vi.useRealTimers();
+    });
+
+    it('unmount (destroy) aborts an in-flight window fetch', async () => {
+      const { signals } = stubAbortableWindowFetch();
+      await renderOpenGroup();
+      expect(signals[0].aborted).toBe(false);
+      await act(async () => {
+        root?.unmount();
+        root = null;
+      });
+      expect(signals[0].aborted).toBe(true);
+    });
+
+    it('a close/destroy abort is silent (no error indicator)', async () => {
+      const { signals } = stubAbortableWindowFetch();
+      await renderOpenGroup();
+      await act(async () => {
+        root?.unmount();
+        root = null;
+      });
+      expect(signals[0].aborted).toBe(true);
+      // destroy sets disposed, so the rejected fetch must not paint an error.
+      expect(container.querySelector('.chart-error')).toBeNull();
+    });
+  });
 });
