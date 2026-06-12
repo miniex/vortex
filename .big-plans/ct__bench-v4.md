@@ -8,12 +8,12 @@ branch: ct/bench-v4
 planning_sub_flow: null
 current_phase: "Phase 5: Cutover + decommission"
 phase_index: 5
-current_pr: PR-5.1
+current_pr: PR-5.0.97
 pr_index: 6
 outstanding_must_fix: 0
 deferred_items_total: 25
 last_user_touchpoint: 2026-06-12T00:00:00Z
-last_user_touchpoint_what: "PR-5.0.95 (lazy-hydration + resilient loading, UI/UX round 2) is CLOSED on 2026-06-12: shipped + gauntlet-pr-2-accepted at the ~3-cycle cap (cycles reject/reject/fix-and-accept, executor=claude; full record in the PR-5.0.95 Implementation status entry), commit trail 096f74f7c..327f1fb92. Frontend-only (benchmarks-website/web/): (A) IntersectionObserver-gated top-first lazy hydration on the landing page (only ~visible charts hydrate on group open, the rest on scroll; dropped the all-charts summary bulk prefetch + dead group-open priority), (B) per-fetch AbortController + FETCH_TIMEOUT_MS=30000 + clickable initial-fetch retry wired into both fetches, (C) a prefers-reduced-motion-guarded loading spinner. 247 vitest pass + tsc/next-build/eslint/prettier green. 1 should-fix deferred (a loading-survival test; deferred_items_total 24->25). NEXT (current_pr): PR-5.1 — promote v4 --postgres ingest to required + drop the v3 --server write from the 3 ingest workflows + ship scripts/psql-bench.sh. PR-5.1's FIRST step is a PROD RDS WRITE gate: re-run the PR-3.5 cross-check (scripts/cross_check_python_writer.py --postgres) via the bench_ingest IAM role against accumulated prod soak data and confirm clean BEFORE removing continue-on-error. That is a genuine externalized-side-effect gate needing user coordination (operator-run vs agent-run with creds) — surface it and get per-action approval; NOT a Class A pause. Then PR-5.2 (DNS flip), PR-5.3 (decommission). Each prod write remains harness-gated. Pre-squash backup ref refs/backups/ct-bench-v4-pre-squash-386ea347b at the old 143-commit tip; recreate a fresh one before any PR-5.3/final squash. Phase 5 = b9fc6220d..; phase_entry_sha b9fc6220d unchanged; last_commit 327f1fb92 (last CODE commit; PR-5.0.95 plan/close commits are doc-only)."
+last_user_touchpoint_what: "NEW SUB-PR PR-5.0.97 (always-warm last-100 cache + full spinner coverage + fast Expand All) scoped + plan-approved on 2026-06-12, inserted AHEAD of PR-5.1 (same Amend flow as PR-5.0.9 / PR-5.0.95). User report: the site is STILL slow to load after PR-5.0.95; wants the last 100 commits cached always + refreshed on ingest, a spinner whenever data is loading, and Expand All to load every chart's last-100 as fast as possible. Diagnosis (read-only this session): ?n=100 is fast warm (~0.2s) but ~7.8s on a COLD hit (Lambda cold start + per-conn RDS IAM token + query); CDN is per-URL s-maxage=300 + SWR=86400 (lib/cache.ts) and NOTHING warms/refreshes after ingest; client fetches per-chart /api/chart (Chart.tsx:473) while the bulk GET /api/group/{slug}?n=100 endpoint EXISTS and is UNUSED; no client payload cache (close/reopen refetches); the PR-5.0.95 spinner only covers the initial fetch (pre-hydration cards are BLANK). Two user decisions (AskUserQuestion): (1) cache layer = Vercel Data Cache (unstable_cache) + secret-protected POST /api/revalidate called by post-ingest.py + warm pass; (2) spinner = RESPECT prefers-reduced-motion (static ring + visible label when reduced motion on), extend coverage to every pre-data state. Design at .big-plans/ct__bench-v4-uiux-r3-design.md; approved plan at ~/.config/claude/plans/lets-continue-i-think-gleaming-meteor.md. 6 tasks (server data-cache, /api/revalidate, post-ingest hook, client group-bundle+session cache, spinner coverage, tests). Review = gauntlet pr-3 (cross-cutting: client + server/auth + prod ingest script). Ops prereq (coordinate at execution): set BENCH_REVALIDATE_TOKEN in Vercel env + GH Actions secret, BENCH_SITE_BASE_URL as an Actions var — until set, route 503s fail-closed and the post-ingest hook is a silent no-op (everything degrades to current behavior). AFTER PR-5.0.97 closes: PR-5.1 (prod RDS WRITE gate; unchanged), then PR-5.2 (DNS flip), PR-5.3 (decommission). Pre-squash backup ref refs/backups/ct-bench-v4-pre-squash-386ea347b; recreate fresh before any PR-5.3/final squash. Phase 5 = b9fc6220d..; phase_entry_sha b9fc6220d unchanged; last_commit 327f1fb92 (last CODE commit; PR-5.0.95 + this amend are doc-only)."
 subagent_invocations_this_pr: 0
 subagent_invocations_total: 201
 review_cycles_this_pr: 0
@@ -26,9 +26,55 @@ last_commit: 327f1fb92
 last_cycle_commits: []
 ```
 
-## SESSION HANDOFF 2026-06-12 (PR-5.0.95 CLOSED; PR-5.1 is next — gated on a PROD RDS WRITE; READ THIS FIRST)
+## SESSION HANDOFF 2026-06-12 (PR-5.0.97 scoped + plan-approved; EXECUTING — READ THIS FIRST)
 
 **Newest handoff; supersedes the sections below as the "read first" entry.** Resume via
+`/spiral:big-plans` in the `vortex4` worktree. The `Current State` block routes to `current_pr:
+PR-5.0.97`. (Heads-up: the stock `resume_routing.py` falls to its Coarse floor on this custom
+spine; the `Current State` block + git log are ground truth, per the Hybrid-fallback rule.)
+
+**1. PR-5.0.97 is a NEW SUB-PR inserted AHEAD of PR-5.1** (same Amend flow as PR-5.0.9 /
+PR-5.0.95). After PR-5.0.95 shipped, the user reported the site is STILL slow to load and steered a
+third loading-model round. Scope: **(1) always-warm last-100 cache** — wrap the default-window
+(`?n=100`) query path in Vercel's Data Cache (`unstable_cache`, tag `bench-data`, 1h backstop) so
+CDN misses stop paying the ~7.8s cold RDS path; a new secret-protected **`POST /api/revalidate`**
+(bearer `BENCH_REVALIDATE_TOKEN`, `timingSafeEqual`, 503-fail-closed) called by
+`scripts/post-ingest.py` after each `--postgres` write + a best-effort warm pass (every failure
+swallowed — never changes the ingest exit code). **(2) full spinner coverage** — a server-rendered
+`.chart-placeholder` (spinner ring + "loading…" label) for EVERY pre-data state (pre-hydration
+cards are blank today); keep the `prefers-reduced-motion` guard but keep a static ring + label
+visible (user's chosen behavior). **(3) fast Expand All** — switch group-open hydration to ONE
+`/api/group/{slug}?n=100` bundle fetch per group feeding a session-lifetime client payload cache
+(`Map<slug,payload>`); IntersectionObserver keeps gating Chart.js CONSTRUCTION only, so Expand All
+loads every chart's last-100 eagerly (top-group-first) while construction stays lazy; close/reopen
+never refetches.
+
+**2. Two user decisions are PINNED (AskUserQuestion this session):** cache layer = Data Cache +
+revalidate (not CDN-warm-only, not static JSON); spinner = RESPECT prefers-reduced-motion. Design
+is authoritative at **`.big-plans/ct__bench-v4-uiux-r3-design.md`** (read in full); approved plan at
+`~/.config/claude/plans/lets-continue-i-think-gleaming-meteor.md`. Review = **gauntlet pr-3**
+(cross-cutting: client loading-model + server caching/auth + the production ingest script).
+
+**3. Ops prerequisite (coordinate at execution, not a code blocker):** generate the shared secret,
+set `BENCH_REVALIDATE_TOKEN` in the Vercel project env + as a GitHub Actions secret, and
+`BENCH_SITE_BASE_URL` as an Actions var. Until set, the revalidate route 503s fail-closed and the
+post-ingest hook is a silent no-op — every piece degrades to current behavior, so the PR is safe to
+merge before the ops wiring lands.
+
+**4. How to implement:** follow the big-plans Phase-2 loop — writing-plans (JIT task-plan
+`.big-plans/ct__bench-v4--5-0-97-warm-cache.plan.md`) -> SDD -> gauntlet pr-3 -> Step 2.5 close ->
+push (fires `web-deploy.yml`). Check the Codex companion is installed if you want Claude+Codex
+executor disjointness (absent in PR-5.0.9 / PR-5.0.95 -> Claude-only gauntlet).
+
+**5. After PR-5.0.97 closes:** PR-5.1 (promote v4 `--postgres` ingest to required + drop the v3
+`--server` write + ship `scripts/psql-bench.sh`) — its FIRST step is a PROD RDS WRITE gate (re-run
+the PR-3.5 cross-check via the `bench_ingest` IAM role) needing user coordination; a genuine
+externalized-side-effect gate, NOT a Class A pause. Then PR-5.2 (DNS flip), PR-5.3 (decommission).
+Each prod write remains harness-gated.
+
+## SESSION HANDOFF 2026-06-12 (PR-5.0.95 CLOSED; PR-5.1 is next — gated on a PROD RDS WRITE) [SUPERSEDED by the section above; PR-5.0.97 is inserted ahead of PR-5.1]
+
+Resume via
 `/spiral:big-plans` in the `vortex4` worktree. The `Current State` block routes to `current_pr:
 PR-5.1`. (Heads-up: the stock `resume_routing.py` falls to its Coarse floor on this custom spine; the
 `Current State` block + git log are ground truth, per the Hybrid-fallback rule.)
