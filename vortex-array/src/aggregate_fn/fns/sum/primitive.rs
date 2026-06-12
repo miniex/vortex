@@ -58,13 +58,11 @@ fn accumulate_primitive_all(inner: &mut SumState, p: &PrimitiveArray) -> VortexR
     }
 }
 
-/// Sum the non-NaN values of a float slice into an `f64` accumulator. NaNs are skipped to match the
-/// scalar `sum` semantics. Floats cannot overflow the accumulator, so this never reports saturation.
+/// Sum a float slice into an `f64` accumulator. NaN values propagate into the sum, as in IEEE 754
+/// addition. Floats cannot overflow the accumulator, so this never reports saturation.
 pub(super) fn sum_float_all<T: NativePType>(acc: &mut f64, slice: &[T]) {
     for &v in slice {
-        if !v.is_nan() {
-            *acc += ToPrimitive::to_f64(&v).vortex_expect("float to f64");
-        }
+        *acc += ToPrimitive::to_f64(&v).vortex_expect("float to f64");
     }
 }
 
@@ -297,7 +295,7 @@ mod tests {
         )
         .into_array();
         let result = sum(&arr, &mut LEGACY_SESSION.create_execution_ctx())?;
-        assert_eq!(result.as_primitive().typed_value::<f64>(), Some(6.0));
+        assert!(result.as_primitive().typed_value::<f64>().unwrap().is_nan());
         Ok(())
     }
 
@@ -306,7 +304,7 @@ mod tests {
         let arr =
             PrimitiveArray::new(buffer![1.0f32, f32::NAN, 4.0], Validity::NonNullable).into_array();
         let result = sum(&arr, &mut LEGACY_SESSION.create_execution_ctx())?;
-        assert_eq!(result.as_primitive().typed_value::<f64>(), Some(5.0));
+        assert!(result.as_primitive().typed_value::<f64>().unwrap().is_nan());
         Ok(())
     }
 
@@ -315,7 +313,7 @@ mod tests {
         let arr = PrimitiveArray::from_option_iter([Some(1.0f64), None, Some(f64::NAN), Some(3.0)])
             .into_array();
         let result = sum(&arr, &mut LEGACY_SESSION.create_execution_ctx())?;
-        assert_eq!(result.as_primitive().typed_value::<f64>(), Some(4.0));
+        assert!(result.as_primitive().typed_value::<f64>().unwrap().is_nan());
         Ok(())
     }
 
@@ -324,7 +322,7 @@ mod tests {
         let arr =
             PrimitiveArray::new(buffer![f64::NAN, f64::NAN], Validity::NonNullable).into_array();
         let result = sum(&arr, &mut LEGACY_SESSION.create_execution_ctx())?;
-        assert_eq!(result.as_primitive().typed_value::<f64>(), Some(0.0));
+        assert!(result.as_primitive().typed_value::<f64>().unwrap().is_nan());
         Ok(())
     }
 

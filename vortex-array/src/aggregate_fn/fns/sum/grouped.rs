@@ -43,7 +43,7 @@ impl DynGroupedAggregateKernel for PrimitiveGroupedSumEncodingKernel {
 ///
 /// Reuses the scalar primitive-sum reductions ([`sum_unsigned_all`]/[`sum_signed_all`]/
 /// [`sum_float_all`]) so the per-group semantics match scalar `sum` exactly (overflow saturates to
-/// a null sum, NaNs are skipped). The element validity mask is materialized once and sliced per
+/// a null sum, NaNs propagate). The element validity mask is materialized once and sliced per
 /// group, rather than the per-group accumulator setup of the generic fallback path.
 pub(super) fn try_grouped_sum(
     groups: &GroupedArray,
@@ -321,18 +321,19 @@ mod tests {
         let groups = listview(elements.clone(), &ranges, &valid)?;
         let actual = grouped_sum_actual(&groups, &elem_dtype)?;
 
-        // Group 0: NaN skipped -> 3.0. Group 1: INF + -INF = NaN. (Avoid array equality here since
-        // NaN != NaN; compare element scalars against the reference path instead.)
+        // Group 0: NaN propagates -> NaN. Group 1: INF + -INF = NaN. (Avoid array equality here
+        // since NaN != NaN; compare element scalars against the reference path instead.)
         let mut ctx = LEGACY_SESSION.create_execution_ctx();
         let expected = grouped_sum_reference(&elements, &ranges, &valid, &elem_dtype)?;
         let g0 = actual.execute_scalar(0, &mut ctx)?;
-        assert_eq!(g0.as_primitive().typed_value::<f64>(), Some(3.0));
-        assert_eq!(
-            g0.as_primitive().typed_value::<f64>(),
+        assert!(g0.as_primitive().typed_value::<f64>().unwrap().is_nan());
+        assert!(
             expected
                 .execute_scalar(0, &mut ctx)?
                 .as_primitive()
                 .typed_value::<f64>()
+                .unwrap()
+                .is_nan()
         );
         let g1 = actual.execute_scalar(1, &mut ctx)?;
         assert!(g1.as_primitive().typed_value::<f64>().unwrap().is_nan());

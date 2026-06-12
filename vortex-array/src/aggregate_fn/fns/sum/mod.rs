@@ -64,6 +64,7 @@ pub fn sum(array: &ArrayRef, ctx: &mut ExecutionCtx) -> VortexResult<Scalar> {
 ///
 /// If the sum overflows, a null scalar will be returned.
 /// If the array is all-invalid, the sum will be zero.
+/// Float NaN values propagate: any NaN in the input makes the sum NaN.
 #[derive(Clone, Debug)]
 pub struct Sum;
 

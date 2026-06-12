@@ -90,15 +90,18 @@ impl BinaryCombined for Mean {
             _ => DType::Primitive(PType::F64, Nullability::Nullable),
         };
         let sum_cast = sum.cast(target.clone())?;
-        let count_cast = count.cast(target)?;
-        let mean = sum_cast.binary(count_cast, Operator::Div)?;
+        let count_cast = count.cast(target.clone())?;
+        let mean = sum_cast.binary(count_cast.clone(), Operator::Div)?;
         // Nulls are skipped during accumulation, so an all-null group has a count of zero and
         // the division produces 0/0 = NaN. The mean of an empty group is null (as in SQL), so
         // mask out zero-count entries. This matches `finalize_scalar`.
-        let non_empty = count.binary(
-            ConstantArray::new(0u64, count.len()).into_array(),
-            Operator::NotEq,
-        )?;
+        let non_empty = count_cast
+            .binary(
+                ConstantArray::new(Scalar::zero_value(&target), count.len()).into_array(),
+                Operator::NotEq,
+            )?
+            // A null count means a null group; keep it masked out.
+            .fill_null(false)?;
         mean.mask(non_empty)
     }
 
@@ -249,17 +252,12 @@ mod tests {
         Ok(())
     }
 
-    /// Group inputs and expected means, exercised identically through the scalar-partial path
-    /// (`finalize_scalar`) and the grouped array path (`finalize`).
-    ///
-    /// Note that `Sum` skips NaN values while `Count` counts them as valid, so NaN elements
-    /// reduce the mean rather than poisoning it, e.g. `mean(NaN, 1, null) = 1/2`.
     fn mean_cases() -> Vec<(Vec<Option<f64>>, Option<f64>)> {
         vec![
-            (vec![Some(f64::NAN), Some(1.0), None], Some(0.5)),
-            (vec![Some(f64::NAN), Some(1.0), Some(1.0)], Some(2.0 / 3.0)),
-            (vec![None, None, Some(f64::NAN)], Some(0.0)),
-            (vec![Some(f64::NAN), Some(1.0), Some(1.0)], Some(2.0 / 3.0)),
+            (vec![Some(f64::NAN), Some(1.0), None], Some(f64::NAN)),
+            (vec![Some(f64::NAN), Some(1.0), Some(1.0)], Some(f64::NAN)),
+            (vec![None, None, Some(f64::NAN)], Some(f64::NAN)),
+            (vec![Some(f64::NAN), Some(1.0), Some(1.0)], Some(f64::NAN)),
             (vec![None, None, None], None),
             (vec![Some(1.0), Some(2.0), Some(3.0)], Some(2.0)),
         ]
