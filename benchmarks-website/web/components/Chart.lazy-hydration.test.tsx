@@ -232,64 +232,72 @@ describe('PR-5.0.95 landing-page lazy hydration', () => {
     expect(windowFetchCount()).toBeGreaterThan(fetchCountBeforeRefire);
   });
 
-  it('reopening after a close-while-queued schedules a FRESH fetch (reopen-race regression)', async () => {
-    // Never-resolving, signal-honoring fetch stub: the promise only rejects when
-    // the signal fires, so the aborted task's rejection has not settled before
-    // the synchronous `abortInFlightFetches()` call in the close handler clears
-    // the entry refs (UF-1a). This is the critical window the bug lives in.
-    const signals: AbortSignal[] = [];
-    vi.stubGlobal('fetch', (url: string | URL, init?: { signal?: AbortSignal }) => {
-      fetchCalls.push(String(url));
-      if (init?.signal) {
-        signals.push(init.signal);
-      }
-      return new Promise<Response>((_res, reject) => {
-        init?.signal?.addEventListener('abort', () =>
-          reject(init.signal?.reason ?? new DOMException('Aborted', 'AbortError')),
-        );
+  it('reopen re-schedules a fetch even when the aborted task was still QUEUED (UF-1 regression)', async () => {
+    // Saturate the hydration queue (concurrency 4) with rejectable blockers so
+    // the target card's `?n=100` task stays QUEUED and never runs. Only the
+    // synchronous entry-clear in `abortInFlightFetches` can then make reopen
+    // schedule a fresh fetch; without it, reopen joins the stale entry and the
+    // card stays blank.
+    const rejecters: Array<(reason: unknown) => void> = [];
+    for (let i = 0; i < 4; i++) {
+      // Suppress the unhandled-rejection warning: the entry promise is rejected
+      // intentionally in the `finally` to drain the module-singleton queue.
+      hydrationQueue
+        .schedule(() => new Promise((_res, rej) => rejecters.push(rej)), 10_000)
+        .promise.catch(() => {});
+    }
+    // Flush one microtask so the 4 blocker tasks actually start (occupy the
+    // concurrency slots) before the target card schedules its task.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    // All 4 slots must be occupied before the target schedules.
+    expect(rejecters.length).toBe(4);
+
+    // Spy on `hydrationQueue.schedule` AFTER the blockers so only the target
+    // card's calls are counted.
+    const scheduleSpy = vi.spyOn(hydrationQueue, 'schedule');
+    try {
+      await renderGroup(1);
+      // Fire card 0's observer. Its `?n=100` task is queued behind the blockers
+      // (all concurrency slots are taken); no fetch runs yet.
+      await act(async () => {
+        MockIO.instances[0].fire(true);
+        await Promise.resolve();
       });
-    });
+      const scheduledAfterOpen = scheduleSpy.mock.calls.length;
 
-    await renderGroup(2);
+      const details = container.querySelector('details.group-disclosure') as HTMLDetailsElement;
+      // Close the group. With the fix, `abortInFlightFetches` synchronously
+      // clears `state.initialFetchEntry`; the queued task never runs because
+      // all concurrency slots are still held by the blockers.
+      await act(async () => {
+        details.open = false;
+        details.dispatchEvent(new Event('toggle'));
+        await Promise.resolve();
+      });
 
-    // Fire card 0's observer so its `?n=100` fetch starts and is in-flight.
-    await act(async () => {
-      MockIO.instances[0].fire(true);
-      await Promise.resolve();
-    });
-    expect(windowFetchCount()).toBe(1);
+      // Reopen and fire the freshly re-armed observer for card 0.
+      await act(async () => {
+        details.open = true;
+        details.dispatchEvent(new Event('toggle'));
+        MockIO.instances[MockIO.instances.length - 1].fire(true);
+        await Promise.resolve();
+      });
 
-    const details = container.querySelector('details.group-disclosure') as HTMLDetailsElement;
-
-    // Close the group inside act but do NOT flush extra microtasks afterward: the
-    // aborted task's rejection handler has not run yet, so without UF-1a the
-    // `initialFetchEntry` ref would still be non-null on reopen.
-    await act(async () => {
-      details.open = false;
-      details.dispatchEvent(new Event('toggle'));
-    });
-
-    // Reopen the group. The toggle handler re-arms the IntersectionObserver for
-    // each card, creating new MockIO instances.
-    await act(async () => {
-      details.open = true;
-      details.dispatchEvent(new Event('toggle'));
-      await Promise.resolve();
-    });
-
-    // Fire the re-armed observer for card 0. Without UF-1a this joins the
-    // aborting promise (entry ref is stale) and never schedules a new fetch.
-    const newInstances = MockIO.instances.slice(2); // instances created on reopen
-    const card0Io = newInstances.find((io) => !io.disconnected) ?? newInstances[0];
-    await act(async () => {
-      card0Io.fire(true);
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    // A second `?n=100` fetch MUST have been issued for card 0. This assertion
-    // fails against the pre-UF-1 code (count stays at 1) and passes after.
-    expect(windowFetchCount()).toBe(2);
+      // The reopen MUST have scheduled a new task. Without UF-1a the stale
+      // entry survives the close and `ensureInitialPayload` joins it instead of
+      // scheduling a fresh one, so the count stays at `scheduledAfterOpen` and
+      // this assertion fails against the pre-fix code.
+      expect(scheduleSpy.mock.calls.length).toBeGreaterThan(scheduledAfterOpen);
+    } finally {
+      // Drain the module-singleton queue so later tests are not affected.
+      rejecters.forEach((reject) => reject(new Error('test cleanup')));
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    }
   });
 
   it('closing the group disconnects observers and aborts in-flight fetches', async () => {

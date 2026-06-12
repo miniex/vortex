@@ -1986,8 +1986,6 @@ export function Chart({ slug, name, index, groupSlug, initialPayload }: ChartIsl
                 if (!controller) {
                   return;
                 }
-                setError(null);
-                setRetryable(false);
                 controller.retryInitialPayload();
               }}
             >
