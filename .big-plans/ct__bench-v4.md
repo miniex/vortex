@@ -58,6 +58,34 @@ the post-ingest hook is a silent no-op (everything degrades to current behavior)
 deployed without the wiring — but refresh-on-update + warming do not actually activate until the env
 is wired. Flag this to the user when convenient.
 
+**2b. POST-CLOSE same-session findings (2026-06-12, after deploy) + a QUEUED sub-PR-5.0.98.** The
+user reported the site "still feels slow" and that "load all data of a given chart" feels even
+slower. Live measurements against `https://benchmarks-web.vercel.app` CONFIRM the Data Cache is
+working — every user-facing fetch is now sub-0.4s (landing `/` 0.16-0.38s; chart `?n=100`
+0.09-0.22s; group `?n=100` bundle [43 charts, 1.44MB] 0.25s; chart `?n=all` [1.1MB] 0.14s warm /
+0.44s miss). The ~7.8s cold RDS path is GONE for the default window; the 20s first-load the user saw
+was the one-time cold cache fill. The ONLY slow endpoint is `group ?n=all` (48MB / 10.7s) but the
+client NEVER requests it (the bundle URL is hardcoded `?n=100`; full history is per-chart
+`?n=all`) — latent API footgun, not user-facing. A micro-profile of the real shipped client data
+path over the 3,572-commit/1.1MB `?n=all` payload showed it is **~5ms total** (JSON.parse 1.2ms,
+`normalizeChartPayload` ~0ms fast-path, `collectAllValues` 0.18ms, `pickDisplayUnit` 2.3ms,
+`lttbIndices` 3572->500 0.03ms x8 series) — so "load all" lag is NEITHER client CPU NOR the
+datacenter fetch; it is the **1.1MB payload over a real-world connection**, which makes server-side
+`?n=all` downsampling (shrink the bytes, ~1.1MB -> ~300KB) the correct lever (NOT a client
+optimization). **User decisions this session (AskUserQuestion):** build a **keep-warm cron** + profile
+the client first (profiling DONE, result above); the user did NOT yet greenlight server-side
+downsampling. **QUEUED: PR-5.0.98 (keep-warm cron)** — a scheduled GitHub Actions workflow that GETs
+`/` + `/api/groups` then each group's `/api/group/{slug}?n=100` every ~4-5 min (under the 5-min CDN
+`s-maxage`) so the Data Cache + CDN never go cold on this low-traffic site; NO secret needed
+(read-only public traffic); build via the big-plans Amend flow ahead of PR-5.1 (writing-plans -> SDD
+-> gauntlet pr-2/pr-3 -> close -> push); follow `.github/AGENTS.md` + yamllint. **PENDING user
+decision: PR-5.0.99? server-side `?n=all` downsampling** (the real "load all" fix; tradeoff = must
+preserve pan/zoom fidelity by re-fetching denser data on zoom into a region, which is why the design
+deferred it — present the profiling finding and let the user choose). **OPS-WIRING (user's action,
+boundary):** the agent CANNOT set `BENCH_REVALIDATE_TOKEN` (Vercel env + GH secret) /
+`BENCH_SITE_BASE_URL` (GH var) — that is the user's to do; it activates refresh-on-ingest + the warm
+pass (already built) + lets us safely raise the 3600s Data Cache backstop.
+
 **3. PR-5.1 is next and its FIRST step is a PROD RDS WRITE gate.** Scope: promote the v4 `--postgres`
 ingest to required + drop the v3 `--server` write from the 3 ingest workflows (`bench.yml`,
 `sql-benchmarks.yml`, `v3-commit-metadata.yml` — remove the v3 step + the `continue-on-error` on the
