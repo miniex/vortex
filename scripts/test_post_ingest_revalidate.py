@@ -57,6 +57,32 @@ def test_refresh_posts_revalidate_with_bearer(monkeypatch):
     assert revalidate, "expected a POST to /api/revalidate"
     # urllib title-cases header keys, so the bearer lives under "Authorization".
     assert revalidate[0][1].get("Authorization") == "Bearer tok"
+    # Revalidate must be the first request issued, before any warm GETs.
+    assert calls[0][0].endswith("/api/revalidate"), "revalidate must precede warm GETs"
+
+
+def test_refresh_skips_warm_when_revalidate_fails(monkeypatch):
+    """When the revalidate POST fails, no warm GET must be issued.
+
+    Warming after a failed flush would repopulate the Data Cache with stale data.
+    The function must still return normally (never raise).
+    """
+    calls: list[str] = []
+
+    def fake_urlopen(req, timeout=None):
+        calls.append(req.full_url)
+        if len(calls) == 1:
+            raise OSError("revalidate failed")
+        return _FakeResponse(b'{"groups": []}')
+
+    monkeypatch.setattr(post_ingest.urllib.request, "urlopen", fake_urlopen)
+    result = post_ingest.refresh_site_cache("https://example.test", "tok", 5.0)
+
+    # Must not raise.
+    assert result is None
+    # Only the one revalidate attempt should have been made; no warm GETs follow.
+    assert len(calls) == 1, f"expected 1 call (the failed revalidate), got {len(calls)}: {calls}"
+    assert calls[0].endswith("/api/revalidate")
 
 
 def test_refresh_swallows_all_failures(monkeypatch):

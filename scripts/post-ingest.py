@@ -1113,7 +1113,7 @@ def _warm_default_windows(base: str, timeout: float) -> None:
     try:
         groups_body = _http("GET", f"{base}/api/groups", None, timeout)
         slugs = [g["slug"] for g in json.loads(groups_body).get("groups", []) if "slug" in g]
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 -- group discovery is best-effort.
         print(f"warning: warm group discovery failed: {exc}", file=sys.stderr)
         return
     # A whole-bundle recompute is a few seconds cold, so warm with bounded
@@ -1124,13 +1124,18 @@ def _warm_default_windows(base: str, timeout: float) -> None:
 
 def refresh_site_cache(base_url: str, token: str, timeout: float) -> None:
     """Revalidate the site's Data Cache tag, then warm the default windows.
+
     BEST-EFFORT: every failure is logged to stderr and swallowed so a cache
-    refresh can never change the ingest exit code."""
+    refresh can never change the ingest exit code. The warm pass is skipped
+    when revalidation fails: warming after a failed flush would repopulate the
+    Data Cache with stale data, which is the opposite of the intent.
+    """
     base = base_url.rstrip("/")
     try:
         _http("POST", f"{base}/api/revalidate", token, timeout)
     except Exception as exc:  # noqa: BLE001 -- refresh must never raise into ingest.
         print(f"warning: cache revalidate failed: {exc}", file=sys.stderr)
+        return  # Skip the warm pass: no point warming a cache that was not flushed.
     _warm_default_windows(base, timeout)
 
 
