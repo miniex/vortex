@@ -16,7 +16,9 @@ describe('PR-5.0.95 spinner CSS', () => {
   });
 
   it('disables the spinner animation under prefers-reduced-motion: reduce', () => {
-    const reduced = css.match(/@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*?\}/g);
+    const reduced = css.match(
+      /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{(?:[^{}]|\{[^{}]*\})*\}/g,
+    );
     expect(reduced).not.toBeNull();
     expect(reduced!.join('\n')).toMatch(/\.chart-spinner[\s\S]*animation:\s*none/);
   });

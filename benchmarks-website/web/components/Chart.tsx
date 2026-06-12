@@ -504,8 +504,12 @@ class ChartController {
     state.initialFetchEntry = entry;
     return entry.promise.then(
       (raw) => {
-        state.initialFetchEntry = null;
-        state.initialFetchController = null;
+        if (state.initialFetchEntry === entry) {
+          state.initialFetchEntry = null;
+        }
+        if (state.initialFetchController === fc) {
+          state.initialFetchController = null;
+        }
         if (state.disposed) {
           return;
         }
@@ -532,8 +536,12 @@ class ChartController {
         void this.maybeConstruct();
       },
       (err: unknown) => {
-        state.initialFetchEntry = null;
-        state.initialFetchController = null;
+        if (state.initialFetchEntry === entry) {
+          state.initialFetchEntry = null;
+        }
+        if (state.initialFetchController === fc) {
+          state.initialFetchController = null;
+        }
         if (state.disposed) {
           return;
         }
@@ -651,7 +659,9 @@ class ChartController {
         }
         this.replaceChartPayload(full as ChartResponse);
         state.fullLoaded = true;
-        state.fullFetchController = null;
+        if (state.fullFetchController === fc) {
+          state.fullFetchController = null;
+        }
         state.chipError = false;
         this.cb.setLoading(false);
         if (!state.chart && this.groupIsOpen()) {
@@ -659,7 +669,9 @@ class ChartController {
         }
       })
       .catch((err: unknown) => {
-        state.fullFetchController = null;
+        if (state.fullFetchController === fc) {
+          state.fullFetchController = null;
+        }
         // A close/destroy cancellation is silent; a timeout or genuine failure
         // leaves the chip's retry affordance (chipError) so the user can re-try.
         if (err instanceof DOMException && err.name === 'AbortError') {
@@ -671,9 +683,13 @@ class ChartController {
         state.chipError = true;
       })
       .then(() => {
-        state.fullFetchEntry = null;
-        state.fullFetchController = null;
-        state.fullFetchPending = null;
+        if (state.fullFetchEntry === entry) {
+          state.fullFetchEntry = null;
+          state.fullFetchController = null;
+          state.fullFetchPending = null;
+        }
+        // Always re-sync the chip so the UI reflects the latest state even when
+        // the guard above skips the stale entry clears.
         this.syncWindowChip();
       });
     this.syncWindowChip();
@@ -1558,6 +1574,15 @@ class ChartController {
   abortInFlightFetches(): void {
     this.state.initialFetchController?.abort();
     this.state.fullFetchController?.abort();
+    // Drop the entry references so a reopen schedules a FRESH fetch rather than
+    // joining the now-aborting promise (which resolves to nothing and would leave
+    // the card blank). The aborted tasks still settle; their handlers' identity-
+    // guarded clears below no-op once a newer fetch owns these refs.
+    this.state.initialFetchController = null;
+    this.state.initialFetchEntry = null;
+    this.state.fullFetchController = null;
+    this.state.fullFetchEntry = null;
+    this.state.fullFetchPending = null;
   }
 
   /** Tear down this controller: destroy the chart, remove every DOM listener
@@ -1565,7 +1590,7 @@ class ChartController {
    * the mount effect constructs a fresh controller for the next mount. */
   destroy(): void {
     this.state.disposed = true;
-    this.aborter.abort();
+    this.aborter.abort(new DOMException('chart controller destroyed', 'AbortError'));
     if (this.state.hoverDwellTimer !== null) {
       clearTimeout(this.state.hoverDwellTimer);
       this.state.hoverDwellTimer = null;
@@ -1722,10 +1747,11 @@ export function Chart({ slug, name, index, groupSlug, initialPayload }: ChartIsl
       // scripted `details.open` writes, which is how Expand All reaches every
       // island. Closing the group disconnects the observer and aborts in-flight
       // fetches; reopening re-arms.
-      // Negate the visual index so top cards (index 0) have the highest
-      // priority (0) and lower cards get increasingly negative values. The
-      // explicit `0` guard avoids the IEEE-754 negative-zero for the first
-      // card (index 0).
+      // Top cards drain first: priority `0` for the first card, negative `index`
+      // for the rest (the queue sorts highest-priority-first). The `index === 0`
+      // branch yields `+0` not `-0`; runtime sorting treats them identically, but
+      // the visual-order test asserts `Math.max(...).toBe(0)`, and `toBe`'s
+      // `Object.is` check distinguishes `-0` from `0`.
       const priority = index === 0 ? 0 : -index;
       let io: IntersectionObserver | null = null;
       const armHydration = (): void => {
@@ -1956,9 +1982,13 @@ export function Chart({ slug, name, index, groupSlug, initialPayload }: ChartIsl
               className="chart-error-retry"
               data-role="fetch-retry"
               onClick={() => {
+                const controller = controllerRef.current;
+                if (!controller) {
+                  return;
+                }
                 setError(null);
                 setRetryable(false);
-                controllerRef.current?.retryInitialPayload();
+                controller.retryInitialPayload();
               }}
             >
               retry
