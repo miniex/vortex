@@ -52,8 +52,11 @@ import {
 } from '@/lib/chart-format';
 import { loadChartJs } from '@/lib/chart-js';
 import {
+  abortGroupBundle,
   emptyGroupSnapshot,
+  ensureGroupBundle,
   fullHistoryQueue,
+  getCachedPayload,
   getGlobalFilterSnapshot,
   getGroupSnapshot,
   hydrationQueue,
@@ -442,16 +445,85 @@ class ChartController {
   }
 
   /**
-   * Queue the initial `?n=100` fetch through the bounded hydration queue (or
-   * bump its priority if already queued). `showLoading` mirrors v3: the
-   * group-open path shows the per-card loading indicator, the pointer-intent
-   * prefetch stays silent.
+   * Ensure this chart's default `?n=100` payload is loaded. Consults the session
+   * payload cache first (a sibling group-bundle fetch may have already cached
+   * it), then on the landing page drives one bundle fetch per group, falling
+   * back to the per-chart [`fetchInitialPayloadDirect`] only when the bundle does
+   * not cover this slug. The permalink page (no group slug) goes straight to the
+   * per-chart fetch. `showLoading` mirrors v3: the group-open path shows the
+   * per-card loading indicator, the pointer-intent prefetch stays silent.
    */
   ensureInitialPayload(priority: number, showLoading: boolean): Promise<void> {
     const state = this.state;
     if (state.payload || state.disposed) {
       return Promise.resolve();
     }
+    // Fast path: a sibling group-bundle fetch may have already cached this
+    // chart's default payload. Seed from it synchronously (the same steps as the
+    // fetch success path) so no per-chart request is issued.
+    const cached = getCachedPayload(this.slug);
+    if (cached) {
+      this.seedFromCachedPayload(cached);
+      return Promise.resolve();
+    }
+    // On the landing page (a group slug is present), drive one bundle fetch per
+    // group and hydrate from it. Only fall through to the per-chart fetch when
+    // the bundle is unavailable (404 / failed / this slug missing).
+    if (this.groupSlug) {
+      if (showLoading) {
+        this.cb.setLoading(true);
+        this.cb.setRetryable(false);
+      }
+      const groupSlug = this.groupSlug;
+      return ensureGroupBundle(groupSlug, priority).then(() => {
+        if (state.disposed || state.payload) {
+          return;
+        }
+        const fromBundle = getCachedPayload(this.slug);
+        if (fromBundle) {
+          this.seedFromCachedPayload(fromBundle);
+          return;
+        }
+        // Bundle did not cover this chart: fall back to the per-chart fetch.
+        return this.fetchInitialPayloadDirect(priority, showLoading);
+      });
+    }
+    return this.fetchInitialPayloadDirect(priority, showLoading);
+  }
+
+  /** Seed state from a cached default payload (the bundle/cache hit path),
+   * mirroring the per-chart fetch's success handler. Does NOT call
+   * `maybeConstruct`; the caller does after the returned promise resolves. */
+  private seedFromCachedPayload(raw: ChartResponse): void {
+    const state = this.state;
+    // A concurrent full-history upgrade may already have constructed from the
+    // `?n=all` payload; the late cache seed must not clobber that back to the
+    // bounded window (same invariant as the per-chart success handler).
+    if (state.fullLoaded) {
+      return;
+    }
+    const normalized = normalizeChartPayload(raw);
+    state.payload = normalized;
+    state.fullLoaded = normalized.history.complete;
+    if (!normalized.history.complete) {
+      state.everWindowed = true;
+    }
+    this.syncWindowChip();
+    this.cb.setLoading(false);
+    if (this.groupSlug) {
+      noteGroupSeries(this.groupSlug, normalized.series_meta);
+    }
+  }
+
+  /**
+   * Queue the initial `?n=100` fetch through the bounded hydration queue (or
+   * bump its priority if already queued). The per-chart fallback for the bundle
+   * path and the only path on the permalink page. `showLoading` mirrors v3: the
+   * group-open path shows the per-card loading indicator, the pointer-intent
+   * prefetch stays silent.
+   */
+  private fetchInitialPayloadDirect(priority: number, showLoading: boolean): Promise<void> {
+    const state = this.state;
     if (state.initialFetchEntry) {
       if (priority > state.initialFetchEntry.priority) {
         state.initialFetchEntry.priority = priority;
@@ -1755,11 +1827,22 @@ export function Chart({ slug, name, index, groupSlug, initialPayload }: ChartIsl
       // the visual-order test asserts `Math.max(...).toBe(0)`, and `toBe`'s
       // `Object.is` check distinguishes `-0` from `0`.
       const priority = index === 0 ? 0 : -index;
+      // The bundle kick + close abort only run on the landing page, where the
+      // island has a group slug; bind a non-null local so the closures below can
+      // pass it without re-narrowing.
+      const bundleGroupSlug = groupSlug;
       let io: IntersectionObserver | null = null;
       const armHydration = (): void => {
         if (io) {
           // Already armed; do not double-observe.
           return;
+        }
+        // Start the group's bundle fetch immediately on open so every chart's
+        // last-100 data loads eagerly (top-group-first by index priority), even
+        // off-screen. Construction stays gated on intersection below. The
+        // per-group in-flight dedupe means sibling islands issue only ONE fetch.
+        if (bundleGroupSlug !== undefined) {
+          void ensureGroupBundle(bundleGroupSlug, priority);
         }
         if (typeof IntersectionObserver === 'undefined') {
           // Graceful degradation for SSR and legacy browsers that lack
@@ -1785,6 +1868,12 @@ export function Chart({ slug, name, index, groupSlug, initialPayload }: ChartIsl
         io?.disconnect();
         io = null;
         controller.abortInFlightFetches();
+        // Abort the group bundle and drop its in-flight entry so a reopen
+        // re-issues a fresh fetch (idempotent; the first island wins, the rest
+        // no-op). Mirrors `abortInFlightFetches`'s entry-clearing rationale.
+        if (bundleGroupSlug !== undefined) {
+          abortGroupBundle(bundleGroupSlug);
+        }
       };
       const onToggle = (): void => {
         if (details.open) {

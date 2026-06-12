@@ -31,6 +31,10 @@ export const DEFAULT_VISIBLE = 100;
 export const CHART_FETCH_N = String(DEFAULT_VISIBLE);
 /** Per-tab cap for initial latest-100 chart requests. */
 export const HYDRATION_CONCURRENCY = 4;
+/** Per-tab cap for the per-group bundle fetches (`/api/group/{slug}?n=100`).
+ * One in-flight bundle covers a whole group, so the cap bounds how many groups
+ * fetch at once on Expand All without serializing the top groups. */
+export const BUNDLE_CONCURRENCY = 3;
 /** Per-tab cap for background `?n=all` warmup requests. */
 export const FULL_HISTORY_CONCURRENCY = 2;
 /** Priority for a full-history fetch promoted by direct user interaction. */

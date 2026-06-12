@@ -63,6 +63,17 @@ function completePayload(total: number) {
   };
 }
 
+// The PR-5.0.97 group-bundle path fires a `/api/group/{slug}?n=100` fetch on
+// open before the per-chart fetch. These per-CHART resilience/loading tests
+// exercise the per-chart path (the bundle's fallback), so the bundle is forced
+// to 404 here: every island then falls straight back to its own `/api/chart`
+// fetch, leaving each test's per-chart assertions intact.
+function isBundleUrl(url: string): boolean {
+  return url.includes('/api/group/');
+}
+
+const BUNDLE_404 = { ok: false, status: 404 } as unknown as Response;
+
 describe('Chart opt-in full-history loading', () => {
   let container: HTMLElement;
   let root: Root | null = null;
@@ -80,6 +91,9 @@ describe('Chart opt-in full-history loading', () => {
     vi.stubGlobal('fetch', (url: string | URL) => {
       const u = String(url);
       fetchCalls.push(u);
+      if (isBundleUrl(u)) {
+        return Promise.resolve(BUNDLE_404);
+      }
       const r = responders.find((x) => x.match(u));
       if (r) {
         return r.respond(u);
@@ -116,10 +130,13 @@ describe('Chart opt-in full-history loading', () => {
     await act(async () => {
       root?.render(<Chart slug={slug} name="tpch q1" index={0} groupSlug="tpch" />);
     });
-    // Let the queued initial fetch and its normalization microtasks settle.
+    // Let the queued bundle fetch (forced to 404 here), its fall-through to the
+    // per-chart fetch, and the normalization microtasks settle. The bundle 404
+    // and the per-chart fetch each add a few microtask turns, so flush generously.
     await act(async () => {
-      await Promise.resolve();
-      await Promise.resolve();
+      for (let i = 0; i < 6; i++) {
+        await Promise.resolve();
+      }
     });
     return container.querySelector<HTMLButtonElement>('[data-role="window-chip"]');
   }
@@ -329,6 +346,9 @@ describe('Chart opt-in full-history loading', () => {
       vi.stubGlobal('fetch', (url: string | URL, init?: { signal?: AbortSignal }) => {
         const u = String(url);
         fetchCalls.push(u);
+        if (isBundleUrl(u)) {
+          return Promise.resolve(BUNDLE_404);
+        }
         const signal = init?.signal;
         if (signal) {
           signals.push(signal);
@@ -395,6 +415,9 @@ describe('Chart opt-in full-history loading', () => {
       vi.stubGlobal('fetch', (url: string | URL, init?: { signal?: AbortSignal }) => {
         const u = String(url);
         fetchCalls.push(u);
+        if (isBundleUrl(u)) {
+          return Promise.resolve(BUNDLE_404);
+        }
         if (u.includes('n=all')) {
           const signal = init?.signal;
           if (signal) {
@@ -485,6 +508,9 @@ describe('Chart opt-in full-history loading', () => {
       vi.stubGlobal('fetch', (url: string | URL) => {
         const u = String(url);
         fetchCalls.push(u);
+        if (isBundleUrl(u)) {
+          return Promise.resolve(BUNDLE_404);
+        }
         if (u.includes('n=100')) {
           return new Promise<Response>((_res, rej) => {
             rejecter = rej;
@@ -494,7 +520,8 @@ describe('Chart opt-in full-history loading', () => {
       });
       return {
         rejectNext: (e) => rejecter(e),
-        calls: () => fetchCalls.filter((u) => u.includes('n=100')).length,
+        calls: () =>
+          fetchCalls.filter((u) => u.includes('/api/chart/') && u.includes('n=100')).length,
       };
     }
 

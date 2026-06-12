@@ -8,7 +8,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Chart } from '@/components/Chart';
-import { hydrationQueue } from '@/lib/chart-store';
+import { bundleQueue, hydrationQueue, resetPayloadCache } from '@/lib/chart-store';
 
 vi.mock('@/lib/chart-js', () => ({
   loadChartJs: () => new Promise(() => {}),
@@ -328,5 +328,279 @@ describe('PR-5.0.95 landing-page lazy hydration', () => {
     });
     expect(signals[0].aborted).toBe(true);
     expect(MockIO.instances.every((io) => io.disconnected)).toBe(true);
+  });
+});
+
+describe('PR-5.0.97 group-bundle hydration', () => {
+  let container: HTMLElement;
+  let root: Root | null = null;
+  let fetchCalls: string[];
+
+  /** Build a `/api/group/{slug}?n=100` bundle covering `slugs`. */
+  function bundleResponse(slugs: readonly string[]): Response {
+    const charts = slugs.map((slug, i) => ({
+      name: `q${i}`,
+      slug,
+      ...windowedPayload(3572),
+    }));
+    return jsonResponse({ name: 'g', charts });
+  }
+
+  beforeEach(() => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    fetchCalls = [];
+    MockIO.instances = [];
+    resetPayloadCache();
+    vi.stubGlobal('IntersectionObserver', MockIO);
+    container = document.createElement('div');
+    document.body.appendChild(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      root?.unmount();
+    });
+    root = null;
+    container.remove();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+    resetPayloadCache();
+  });
+
+  /**
+   * Render `n` charts (slugs `s0..s(n-1)`) inside one OPEN group disclosure with
+   * `groupSlug="g"`, so the islands route through the group-bundle path.
+   */
+  async function renderGroup(n: number): Promise<void> {
+    const mounts = Array.from({ length: n }, (_, i) => `<div id="m${i}"></div>`).join('');
+    container.innerHTML =
+      '<section class="group-details">' +
+      '<details class="group-disclosure" open><summary class="group-summary">g</summary></details>' +
+      `<div class="chart-grid">${mounts}</div>` +
+      '</section>';
+    const roots: Root[] = [];
+    await act(async () => {
+      for (let i = 0; i < n; i++) {
+        const r = createRoot(container.querySelector(`#m${i}`) as HTMLElement);
+        roots.push(r);
+        r.render(<Chart slug={`s${i}`} name={`q${i}`} index={i} groupSlug="g" />);
+      }
+    });
+    root = {
+      unmount: () => roots.forEach((r) => r.unmount()),
+      render: () => {},
+    } as unknown as Root;
+    await act(async () => {
+      await Promise.resolve();
+    });
+  }
+
+  function bundleFetchCount(): number {
+    return fetchCalls.filter((u) => u.includes('/api/group/')).length;
+  }
+
+  function chartFetchCount(): number {
+    return fetchCalls.filter((u) => u.includes('/api/chart/')).length;
+  }
+
+  it('group open issues exactly ONE bundle fetch and NO per-chart fetch for N islands', async () => {
+    vi.stubGlobal('fetch', (url: string | URL) => {
+      fetchCalls.push(String(url));
+      return Promise.resolve(bundleResponse(['s0', 's1', 's2', 's3', 's4']));
+    });
+    await renderGroup(5);
+    // The bundle is kicked eagerly from `armHydration` for every island, but the
+    // per-group in-flight dedupe collapses the five calls into ONE fetch.
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(bundleFetchCount()).toBe(1);
+    expect(chartFetchCount()).toBe(0);
+    expect(fetchCalls[0]).toContain('/api/group/g?n=100');
+  });
+
+  it('after the bundle resolves, firing an island IO constructs it (IO disconnects)', async () => {
+    vi.stubGlobal('fetch', (url: string | URL) => {
+      fetchCalls.push(String(url));
+      return Promise.resolve(bundleResponse(['s0', 's1']));
+    });
+    await renderGroup(2);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(bundleFetchCount()).toBe(1);
+    await act(async () => {
+      MockIO.instances[0].fire(true);
+      await Promise.resolve();
+    });
+    // Firing the IO disconnects it and drives construction (Chart.js load is a
+    // parked stub here, so the observable construction signal is the disconnect).
+    expect(MockIO.instances[0].disconnected).toBe(true);
+    expect(chartFetchCount()).toBe(0);
+  });
+
+  it('closing the group aborts the in-flight bundle (its fetch signal aborts)', async () => {
+    const signals: AbortSignal[] = [];
+    vi.stubGlobal('fetch', (url: string | URL, init?: { signal?: AbortSignal }) => {
+      fetchCalls.push(String(url));
+      if (init?.signal) {
+        signals.push(init.signal);
+      }
+      return new Promise<Response>((_res, reject) => {
+        init?.signal?.addEventListener('abort', () =>
+          reject(init.signal?.reason ?? new DOMException('Aborted', 'AbortError')),
+        );
+      });
+    });
+    await renderGroup(2);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(signals.length).toBe(1);
+    expect(signals[0].aborted).toBe(false);
+    const details = container.querySelector('details.group-disclosure') as HTMLDetailsElement;
+    await act(async () => {
+      details.open = false;
+      details.dispatchEvent(new Event('toggle'));
+      await Promise.resolve();
+    });
+    expect(signals[0].aborted).toBe(true);
+  });
+
+  it('reopen AFTER the bundle succeeded issues ZERO new fetches (cache hit)', async () => {
+    vi.stubGlobal('fetch', (url: string | URL) => {
+      fetchCalls.push(String(url));
+      return Promise.resolve(bundleResponse(['s0', 's1']));
+    });
+    await renderGroup(2);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(bundleFetchCount()).toBe(1);
+    const callsAfterOpen = fetchCalls.length;
+
+    const details = container.querySelector('details.group-disclosure') as HTMLDetailsElement;
+    await act(async () => {
+      details.open = false;
+      details.dispatchEvent(new Event('toggle'));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      details.open = true;
+      details.dispatchEvent(new Event('toggle'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    // The payload cache is warm, so reopen seeds every island synchronously and
+    // issues no new fetch of any kind.
+    expect(fetchCalls.length).toBe(callsAfterOpen);
+  });
+
+  it('a slug absent from the bundle falls back to one /api/chart fetch', async () => {
+    vi.stubGlobal('fetch', (url: string | URL) => {
+      fetchCalls.push(String(url));
+      // The bundle covers only `s0`; `s1` is missing and must fall back.
+      if (String(url).includes('/api/group/')) {
+        return Promise.resolve(bundleResponse(['s0']));
+      }
+      return Promise.resolve(jsonResponse(windowedPayload(3572)));
+    });
+    await renderGroup(2);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(bundleFetchCount()).toBe(1);
+    // The per-chart fallback only fires once a card is intersected (construction
+    // is IO-gated). Fire both observers; only `s1` (uncovered) must refetch.
+    await act(async () => {
+      MockIO.instances[0].fire(true);
+      MockIO.instances[1].fire(true);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const chartCalls = fetchCalls.filter((u) => u.includes('/api/chart/'));
+    expect(chartCalls.length).toBe(1);
+    expect(chartCalls[0]).toContain('/api/chart/s1?n=100');
+  });
+
+  it('a bundle 404 makes every island fall back to its own /api/chart fetch', async () => {
+    vi.stubGlobal('fetch', (url: string | URL) => {
+      fetchCalls.push(String(url));
+      if (String(url).includes('/api/group/')) {
+        return Promise.resolve({ ok: false, status: 404 } as unknown as Response);
+      }
+      return Promise.resolve(jsonResponse(windowedPayload(3572)));
+    });
+    await renderGroup(3);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(bundleFetchCount()).toBe(1);
+    // Every card intersecting after the 404 falls back to its own per-chart fetch.
+    await act(async () => {
+      MockIO.instances[0].fire(true);
+      MockIO.instances[1].fire(true);
+      MockIO.instances[2].fire(true);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const chartCalls = fetchCalls.filter((u) => u.includes('/api/chart/'));
+    expect(chartCalls.length).toBe(3);
+    expect(chartCalls.map((u) => u).sort()).toEqual([
+      '/api/chart/s0?n=100',
+      '/api/chart/s1?n=100',
+      '/api/chart/s2?n=100',
+    ]);
+  });
+
+  it('two groups opened together respect BUNDLE_CONCURRENCY and top-group priority', async () => {
+    const scheduleSpy = vi.spyOn(bundleQueue, 'schedule');
+    vi.stubGlobal('fetch', (url: string | URL) => {
+      fetchCalls.push(String(url));
+      return Promise.resolve(bundleResponse(['ga0', 'gb0']));
+    });
+    // Two groups, each with one island. The page-wide `index` drives priority,
+    // so the top group (index 0) outranks the lower one (index 1).
+    container.innerHTML =
+      '<section class="group-details" id="ga">' +
+      '<details class="group-disclosure" open><summary class="group-summary">ga</summary></details>' +
+      '<div class="chart-grid"><div id="ma"></div></div>' +
+      '</section>' +
+      '<section class="group-details" id="gb">' +
+      '<details class="group-disclosure" open><summary class="group-summary">gb</summary></details>' +
+      '<div class="chart-grid"><div id="mb"></div></div>' +
+      '</section>';
+    const ra = createRoot(container.querySelector('#ma') as HTMLElement);
+    const rb = createRoot(container.querySelector('#mb') as HTMLElement);
+    await act(async () => {
+      ra.render(<Chart slug="ga0" name="qa" index={0} groupSlug="ga" />);
+      rb.render(<Chart slug="gb0" name="qb" index={1} groupSlug="gb" />);
+    });
+    root = {
+      unmount: () => {
+        ra.unmount();
+        rb.unmount();
+      },
+      render: () => {},
+    } as unknown as Root;
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    // One bundle fetch per group (two groups, two distinct slugs).
+    const groupCalls = fetchCalls.filter((u) => u.includes('/api/group/'));
+    expect(groupCalls.length).toBe(2);
+    const priorities = scheduleSpy.mock.calls.map((c) => c[1]);
+    // index 0 => priority 0 (top group); index 1 => priority -1.
+    expect(priorities).toContain(0);
+    expect(priorities).toContain(-1);
+    expect(Math.max(...(priorities as number[]))).toBe(0);
   });
 });
