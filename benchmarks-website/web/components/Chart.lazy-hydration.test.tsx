@@ -184,6 +184,49 @@ describe('PR-5.0.95 landing-page lazy hydration', () => {
     expect(windowFetchCount()).toBe(0);
   });
 
+  it('reopening the group re-arms fresh observers and hydrates previously-unseen cards', async () => {
+    await renderGroup(2);
+    // Fire card 0's initial observer so it hydrates before close.
+    await act(async () => {
+      MockIO.instances[0].fire(true);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(windowFetchCount()).toBe(1);
+    const instanceCountAfterOpen = MockIO.instances.length;
+
+    const details = container.querySelector('details.group-disclosure') as HTMLDetailsElement;
+    // Close the group; this disconnects observers and aborts in-flight fetches.
+    await act(async () => {
+      details.open = false;
+      details.dispatchEvent(new Event('toggle'));
+      await Promise.resolve();
+    });
+
+    // Reopen: each card's mount effect runs `armHydration` again, creating a
+    // fresh `MockIO` instance per card.
+    await act(async () => {
+      details.open = true;
+      details.dispatchEvent(new Event('toggle'));
+      await Promise.resolve();
+    });
+    // Re-arming must have created at least one new `MockIO` instance.
+    expect(MockIO.instances.length).toBeGreaterThan(instanceCountAfterOpen);
+
+    // Fire the re-armed observer for card 1 (which was NOT hydrated before close).
+    // The newest `MockIO` instances correspond to the re-armed cards; fire the
+    // last one to trigger card 1's fetch.
+    const fetchCountBeforeRefire = windowFetchCount();
+    await act(async () => {
+      MockIO.instances[MockIO.instances.length - 1].fire(true);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    // Card 1 should now have triggered a fetch, proving re-arming created a
+    // working observer.
+    expect(windowFetchCount()).toBeGreaterThan(fetchCountBeforeRefire);
+  });
+
   it('closing the group disconnects observers and aborts in-flight fetches', async () => {
     const signals: AbortSignal[] = [];
     vi.stubGlobal('fetch', (url: string | URL, init?: { signal?: AbortSignal }) => {

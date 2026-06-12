@@ -1705,12 +1705,14 @@ export function Chart({ slug, name, index, groupSlug, initialPayload }: ChartIsl
       const priority = index === 0 ? 0 : -index;
       let io: IntersectionObserver | null = null;
       const armHydration = (): void => {
-        if (io || typeof IntersectionObserver === 'undefined') {
-          // No IO support: hydrate immediately (graceful degradation; also the
-          // path unit tests without an IO mock exercise).
-          if (typeof IntersectionObserver === 'undefined') {
-            controller.onGroupOpen(priority);
-          }
+        if (io) {
+          // Already armed; do not double-observe.
+          return;
+        }
+        if (typeof IntersectionObserver === 'undefined') {
+          // Graceful degradation for SSR and legacy browsers that lack
+          // `IntersectionObserver`: hydrate immediately rather than never.
+          controller.onGroupOpen(priority);
           return;
         }
         io = new IntersectionObserver(
