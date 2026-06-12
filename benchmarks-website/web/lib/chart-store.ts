@@ -21,7 +21,6 @@
 
 import {
   FULL_HISTORY_CONCURRENCY,
-  GROUP_OPEN_PRIORITY_STEP,
   HYDRATION_CONCURRENCY,
   seedActiveFromAllowlist,
   type FilterUniverse,
@@ -104,18 +103,6 @@ export const hydrationQueue: TaskQueue = makeQueue(HYDRATION_CONCURRENCY);
 
 /** Per-tab queue for the background `?n=all` full-history upgrades. */
 export const fullHistoryQueue: TaskQueue = makeQueue(FULL_HISTORY_CONCURRENCY);
-
-let groupOpenPriority = 0;
-
-/**
- * Bump and return the group-open priority. Charts in the most recently opened
- * group enqueue at the highest base priority, so their fetches drain ahead of
- * still-pending work from groups opened earlier.
- */
-export function nextGroupOpenPriority(): number {
-  groupOpenPriority += GROUP_OPEN_PRIORITY_STEP;
-  return groupOpenPriority;
-}
 
 // ---------------------------------------------------------------------------
 // Global filter store.

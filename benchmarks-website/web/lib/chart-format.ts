@@ -33,9 +33,6 @@ export const CHART_FETCH_N = String(DEFAULT_VISIBLE);
 export const HYDRATION_CONCURRENCY = 4;
 /** Per-tab cap for background `?n=all` warmup requests. */
 export const FULL_HISTORY_CONCURRENCY = 2;
-/** Priority step between successive group opens, so the most recently opened
- * group's fetches drain first. */
-export const GROUP_OPEN_PRIORITY_STEP = 100;
 /** Priority for a full-history fetch promoted by direct user interaction. */
 export const INTERACTION_FULL_PRIORITY = 1_000_000;
 /** A silent hover-dwell prefetch outranks idle background work but yields to a

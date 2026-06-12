@@ -30,6 +30,7 @@ import {
   IDENTITY_UNIT,
   INTERACTION_FULL_PRIORITY,
   labelForCommit,
+  LAZY_HYDRATION_ROOT_MARGIN,
   lttbIndices,
   MAX_VISIBLE_POINTS,
   normalizeChartPayload,
@@ -56,7 +57,6 @@ import {
   getGlobalFilterSnapshot,
   getGroupSnapshot,
   hydrationQueue,
-  nextGroupOpenPriority,
   noteGroupSeries,
   subscribeGlobalFilter,
   subscribeGroup,
@@ -552,14 +552,14 @@ class ChartController {
   }
 
   /**
-   * Group-open hydration: fetch this chart's latest-100 window at the group's
-   * base priority and construct. Full history is NOT warmed here; it loads only
-   * on explicit per-chart intent (window-chip click, hover dwell, or pan/zoom
-   * into the unloaded region) so opening a group costs only the cheap windows.
+   * Hydrate this chart's latest-100 window at `priority` and construct. Full
+   * history is NOT warmed here; it loads only on explicit per-chart intent
+   * (window-chip click, hover dwell, or pan/zoom into the unloaded region). The
+   * priority is the negated visual `index`, so top cards drain ahead of lower
+   * ones (the queue drains highest-priority-first).
    */
-  onGroupOpen(): void {
-    const priority = nextGroupOpenPriority();
-    void this.ensureInitialPayload(priority + 20, true).then(() => {
+  onGroupOpen(priority: number): void {
+    void this.ensureInitialPayload(priority, true).then(() => {
       if (this.state.disposed) {
         return;
       }
@@ -1691,32 +1691,62 @@ export function Chart({ slug, name, index, groupSlug, initialPayload }: ChartIsl
     }
 
     if (details) {
-      // Landing page: fetch on group open (the `toggle` event also fires for
+      // Landing page: hydrate each card lazily when it scrolls near the viewport
+      // (reusing the permalink page's IntersectionObserver shape), so opening a
+      // big group hydrates only the ~visible charts, top-first by visual index,
+      // and the rest hydrate on scroll. The `toggle` event also fires for
       // scripted `details.open` writes, which is how Expand All reaches every
-      // island), prefetch quietly on pointer intent.
+      // island. Closing the group disconnects the observer and aborts in-flight
+      // fetches; reopening re-arms.
+      // Negate the visual index so top cards (index 0) have the highest
+      // priority (0) and lower cards get increasingly negative values. The
+      // explicit `0` guard avoids the IEEE-754 negative-zero for the first
+      // card (index 0).
+      const priority = index === 0 ? 0 : -index;
+      let io: IntersectionObserver | null = null;
+      const armHydration = (): void => {
+        if (io || typeof IntersectionObserver === 'undefined') {
+          // No IO support: hydrate immediately (graceful degradation; also the
+          // path unit tests without an IO mock exercise).
+          if (typeof IntersectionObserver === 'undefined') {
+            controller.onGroupOpen(priority);
+          }
+          return;
+        }
+        io = new IntersectionObserver(
+          (entries) => {
+            for (const entry of entries) {
+              if (entry.isIntersecting) {
+                io?.disconnect();
+                io = null;
+                controller.onGroupOpen(priority);
+              }
+            }
+          },
+          { rootMargin: LAZY_HYDRATION_ROOT_MARGIN },
+        );
+        io.observe(card);
+      };
+      const disarmHydration = (): void => {
+        io?.disconnect();
+        io = null;
+        controller.abortInFlightFetches();
+      };
       const onToggle = (): void => {
         if (details.open) {
-          controller.onGroupOpen();
+          armHydration();
+        } else {
+          disarmHydration();
         }
       };
       details.addEventListener('toggle', onToggle);
       cleanups.push(() => details.removeEventListener('toggle', onToggle));
-
-      const summary = group?.querySelector('.group-summary');
-      if (summary) {
-        const onIntent = (): void => {
-          void controller.ensureInitialPayload(0, false);
-        };
-        summary.addEventListener('pointerenter', onIntent);
-        summary.addEventListener('focusin', onIntent);
-        cleanups.push(() => {
-          summary.removeEventListener('pointerenter', onIntent);
-          summary.removeEventListener('focusin', onIntent);
-        });
-      }
-
+      cleanups.push(() => {
+        io?.disconnect();
+        io = null;
+      });
       if (details.open) {
-        controller.onGroupOpen();
+        armHydration();
       }
     } else {
       // Permalink page: the payload is inlined; construct lazily when the card
