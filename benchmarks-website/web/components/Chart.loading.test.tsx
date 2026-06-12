@@ -496,6 +496,57 @@ describe('Chart opt-in full-history loading', () => {
     });
   });
 
+  describe('PR-5.0.97 pre-data placeholder', () => {
+    it('shows a .chart-placeholder with role="status" before any fetch resolves', async () => {
+      // A never-resolving fetch keeps the card permanently pre-constructed, so
+      // the placeholder must be visible from the first paint through to cleanup.
+      vi.stubGlobal('fetch', (url: string | URL) => {
+        fetchCalls.push(String(url));
+        return new Promise<Response>(() => {});
+      });
+      await renderOpenGroup();
+      const placeholder = container.querySelector('.chart-placeholder');
+      expect(placeholder).not.toBeNull();
+      expect(placeholder?.getAttribute('role')).toBe('status');
+      expect(placeholder?.querySelector('.chart-spinner')).not.toBeNull();
+      expect(placeholder?.querySelector('.chart-placeholder-text')).not.toBeNull();
+    });
+
+    it('shows the .chart-placeholder while the initial fetch is pending', async () => {
+      // The default fetch stub resolves, but the chart never constructs because
+      // loadChartJs is mocked to a never-resolving loader. The placeholder must
+      // therefore persist after the fetch resolves (the chart was never built).
+      await renderOpenGroup();
+      const placeholder = container.querySelector('.chart-placeholder');
+      expect(placeholder).not.toBeNull();
+    });
+
+    it('does NOT show the .chart-placeholder alongside the error block', async () => {
+      // When an error fires the .chart-error block is shown; the placeholder
+      // must not appear at the same time (it is suppressed by the !error guard).
+      vi.stubGlobal('fetch', (url: string | URL) => {
+        const u = String(url);
+        fetchCalls.push(u);
+        if (isBundleUrl(u)) {
+          return Promise.resolve(BUNDLE_404);
+        }
+        if (u.includes('n=100')) {
+          return Promise.resolve({ ok: false, status: 500 } as unknown as Response);
+        }
+        return Promise.resolve(jsonResponse(windowedPayload(3572)));
+      });
+      await renderOpenGroup();
+      await act(async () => {
+        for (let i = 0; i < 6; i++) {
+          await Promise.resolve();
+        }
+      });
+      const errorEl = container.querySelector('.chart-error');
+      expect(errorEl).not.toBeNull();
+      expect(container.querySelector('.chart-placeholder')).toBeNull();
+    });
+  });
+
   describe('PR-5.0.95 initial-fetch retry', () => {
     // Overrides the `beforeEach` default `fetch` stub so the `?n=100` fetch can
     // be rejected on demand; `afterEach`'s `vi.unstubAllGlobals()` still cleans

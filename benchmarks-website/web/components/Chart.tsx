@@ -166,6 +166,8 @@ interface CardCallbacks {
   setError: (msg: string | null) => void;
   /** Show/hide the initial-fetch retry control in the error region. */
   setRetryable: (on: boolean) => void;
+  /** Flip once the Chart.js instance exists, so the pre-data placeholder hides. */
+  setConstructed: (on: boolean) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -954,6 +956,7 @@ class ChartController {
       });
 
       state.chart = chart;
+      this.cb.setConstructed(true);
       state.rebuild = throttledRebuild;
       this.attachWheelPan(canvas, chart, throttledRebuild);
       this.syncSliderBounds(labels.length);
@@ -1706,6 +1709,7 @@ export function Chart({ slug, name, index, groupSlug, initialPayload }: ChartIsl
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [retryable, setRetryable] = useState(false);
+  const [constructed, setConstructed] = useState(false);
 
   // The live controller for the CURRENT mount. Created inside the mount effect
   // (not once per component instance) because `destroy()` is one-way and React
@@ -1772,7 +1776,7 @@ export function Chart({ slug, name, index, groupSlug, initialPayload }: ChartIsl
         strip: stripRef.current,
         stripWindow: stripWindowRef.current,
       }),
-      { setY, setLoading, setError, setRetryable },
+      { setY, setLoading, setError, setRetryable, setConstructed },
     );
     controllerRef.current = controller;
     if (initialPayload) {
@@ -2028,6 +2032,12 @@ export function Chart({ slug, name, index, groupSlug, initialPayload }: ChartIsl
       </div>
       <div className="chart-tooltip-host" ref={tooltipHostRef} />
       <div className="chart-wrap">
+        {!constructed && !error && (
+          <div className="chart-placeholder" role="status" aria-live="polite">
+            <span className="chart-spinner" aria-hidden="true" />
+            <span className="chart-placeholder-text">loading…</span>
+          </div>
+        )}
         <canvas data-chart-index={index} ref={canvasRef} />
       </div>
       {/* The aria value attributes track the window's left edge as a percent
