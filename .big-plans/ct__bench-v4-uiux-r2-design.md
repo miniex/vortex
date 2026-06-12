@@ -166,3 +166,73 @@ improvements + the spinner were approved) rather than via a fresh `brainstorming
 decisions (1-3) are flagged for the implementing conversation; run `spiral:grill-me` on this doc if
 extra rigor is wanted before implementing. Execution slots this as PR-5.0.95, AHEAD of PR-5.1, the
 same way PR-5.0.9 was inserted.
+
+## Pre-implementation investigation result (2026-06-12, read-only)
+
+Resolved against the live site (`https://benchmarks-web.vercel.app`). The hangs are a CLIENT-side
+burst plus cold-start plus no-recovery, NOT slow individual server queries, so the scope stays A+B+C
+with no server-query work (exactly as designed):
+
+- A single `/api/chart/{slug}?n=100` for clickbench is ~32KB and returns in 60-90ms even on a Vercel
+  cache MISS.
+- Firing ALL 43 clickbench charts concurrently against the warm function completes in ~0.75s wall
+  with zero failures (slowest individual request ~93ms). The warm server absorbs the full burst
+  trivially.
+- Therefore the perceived slowness/hang is: (1) the cold Vercel function first-hit (~7.8s, measured
+  in PR-5.0.9) amplified by hydrating all 43 charts out of visual order so the top charts the user is
+  looking at resolve last; and (2) no timeout/abort/retry, so an unlucky stalled request spins
+  "loading..." forever and group open/close piles more load on. A (lazy top-first hydration) and B
+  (abort/timeout/retry) target exactly these. No specific chart query was slow; no server follow-up
+  is filed.
+
+## Open decisions RESOLVED (2026-06-12, pre-implementation)
+
+These pin the three flagged decisions plus the B retry and C spinner mechanics, grounded in a read of
+`Chart.tsx`, `lib/chart-store.ts`, `lib/chart-format.ts`, `app/globals.css`, and
+`components/Chart.loading.test.tsx`.
+
+- **Open Decision 1 (group-summary bulk prefetch): DROP it entirely.** The summary
+  `pointerenter`/`focusin` handler at `Chart.tsx` ~L1627-1638 calls `ensureInitialPayload(0, false)`
+  for every chart island, which would re-introduce the all-43 burst on a mere summary hover and
+  defeat lazy hydration. With IO gating, opening the group already hydrates only the ~visible charts
+  (each ~70ms), so the pre-warm's benefit is marginal and its cost is exactly the burst this PR
+  removes. The per-card hover-dwell (`onCardHoverStart` -> `ensureFullHistory`, full `?n=all`) is a
+  DIFFERENT mechanism and stays unchanged. Also drop the now-moot `+20` in `onGroupOpen` (`Chart.tsx`
+  L518): it existed only to outrank the silent summary prefetch at priority 0, which is being removed.
+
+- **Open Decision 2 (`nextGroupOpenPriority`): simplify to a visual-position priority.** Schedule
+  each landing group-chart's initial `?n=100` fetch at a priority that puts TOP cards first. The
+  island already receives its visual `index` within the group (rendered as `data-chart-index`), and
+  the queue drains highest-priority-first, so scheduling at `priority = -index` (or any strictly
+  decreasing function of `index`) makes the top card outrank lower ones and render first. Cross-group
+  recency (the old `nextGroupOpenPriority` intent) is dropped: IO already bounds each group's burst to
+  its visible cards, so whole-group races no longer happen. `nextGroupOpenPriority` /
+  `GROUP_OPEN_PRIORITY_STEP` are used only at `Chart.tsx:517` (not in any test), so remove them if
+  they become unused after this change; keep them only if still referenced.
+
+- **Open Decision 3 (fetch timeout value + mechanism): manual per-fetch `AbortController` +
+  `setTimeout`, `FETCH_TIMEOUT_MS = 30000`.** Do NOT use `AbortSignal.timeout` / `AbortSignal.any`:
+  the test plan drives the timeout with fake timers, which a manual `setTimeout` makes deterministic
+  and which `AbortSignal.timeout` does not. Per fetch: create a fresh `AbortController fc`; pass
+  `fc.signal` to `fetch`; bridge the controller's existing `this.aborter.signal` to `fc.abort()` via a
+  one-shot `'abort'` listener (and call `fc.abort()` immediately if `this.aborter.signal` is already
+  aborted); arm `setTimeout(() => fc.abort(...), FETCH_TIMEOUT_MS)`; and in a `finally` clear the
+  timer and remove the listener. Wire this into BOTH `fetch()` calls (the `?n=100` initial at
+  `Chart.tsx` ~L463 and the `?n=all` full at ~L550) so group close / IO disconnect / `destroy()`
+  cancels in-flight requests. 30s gives generous headroom over a genuinely cold-plus-contended
+  first-hit (~7.8s) while still bounding a true hang, so a false abort of a slow-but-live request is
+  very unlikely.
+
+- **B retry affordance:** on initial-fetch failure or timeout, surface a CLICKABLE retry in the
+  card's error region that re-issues the `?n=100` fetch (mirroring the PR-5.0.9 chip retry). It is
+  user-initiated, so it is naturally bounded; there is no automatic fetch-retry loop. Note
+  `.chart-error` currently has `pointer-events: none` (`globals.css` ~L1171), so the retry control
+  must opt back into pointer events. The existing 4s auto-dismiss keeps retrying CONSTRUCTION only,
+  unchanged.
+
+- **C spinner:** render a CSS spinner inside `.chart-loading` (with visually-hidden "loading" text
+  for accessibility) instead of the bare "loading..." string at `Chart.tsx` ~L1808; add the
+  `@keyframes` + `.chart-spinner` rule near `.chart-loading` (`globals.css` ~L1174) and a
+  `@media (prefers-reduced-motion: reduce)` block that renders a static indicator. Tie the chip's
+  `data-state="loading"` (`globals.css` ~L1033) to a small inline spinner for consistency. This is a
+  loading-state animation only, not a visual redesign.
