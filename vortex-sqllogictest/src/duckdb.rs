@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use bigdecimal::BigDecimal;
 use datafusion_sqllogictest::DFColumnType;
 use indicatif::ProgressBar;
+use regex::RegexBuilder;
 use sqllogictest::DBOutput;
 use sqllogictest::Normalizer;
 use sqllogictest::runner::AsyncDB;
@@ -99,20 +100,50 @@ impl DuckDB {
     }
 }
 
+/// DuckDB-style directive prefixes for the single expected line of a query.
+/// The whole actual output (all rows joined with `\n`) is matched against the
+/// regex that follows the prefix. `<REGEX>:` requires a match, `<!REGEX>:`
+/// requires no match. `.` matches newlines, so `.*` spans the whole block.
+const REGEX_MARKER: &str = "<REGEX>:";
+const NEG_REGEX_MARKER: &str = "<!REGEX>:";
+
+fn regex_matches(pattern: &str, text: &str) -> bool {
+    RegexBuilder::new(pattern)
+        .dot_matches_new_line(true)
+        .build()
+        .expect("invalid <REGEX> pattern")
+        .is_match(text)
+}
+
 pub fn duckdb_validator(
     normalizer: Normalizer,
     actual: &[Vec<String>],
     expected: &[String],
 ) -> bool {
-    let actual = actual.iter().flat_map(|strings| {
-        strings
-            .join(" ")
-            .trim_end()
-            .split('\n')
-            .map(|line| line.trim_end().to_string())
-            .collect::<Vec<_>>()
-    });
-    Iterator::eq(actual, expected.iter().map(normalizer))
+    let actual = actual
+        .iter()
+        .flat_map(|strings| {
+            strings
+                .join(" ")
+                .trim_end()
+                .split('\n')
+                .map(|line| line.trim_end().to_string())
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let expected = expected.iter().map(normalizer).collect::<Vec<_>>();
+
+    // A single `<REGEX>:`/`<!REGEX>:` directive matches the whole actual block.
+    if let [line] = expected.as_slice() {
+        if let Some(pattern) = line.strip_prefix(NEG_REGEX_MARKER) {
+            return !regex_matches(pattern, &actual.join("\n"));
+        }
+        if let Some(pattern) = line.strip_prefix(REGEX_MARKER) {
+            return regex_matches(pattern, &actual.join("\n"));
+        }
+    }
+
+    Iterator::eq(actual.iter(), expected.iter())
 }
 
 #[async_trait]
@@ -274,9 +305,82 @@ mod tests {
     use vortex_duckdb::duckdb::Value;
 
     use super::ValueDisplayAdapter;
+    use super::duckdb_validator;
+    use super::regex_matches;
 
     fn display(value: Value) -> String {
         ValueDisplayAdapter(value).to_string()
+    }
+
+    #[rstest]
+    // Search semantics: the pattern may match anywhere in the text.
+    #[case("foo", "foo", true)]
+    #[case("foo", "xfooy", true)]
+    #[case("foo", "bar", false)]
+    // Anchors and `.*` are honoured.
+    #[case("^foo$", "foo", true)]
+    #[case("^foo$", "xfoo", false)]
+    #[case("a.*b", "axxxb", true)]
+    // `.` matches newlines, so `.*` spans multiple lines.
+    #[case("a.*b", "a\nxx\nb", true)]
+    #[case("needle", "line1\nneedle here\nline3", true)]
+    #[case("missing", "line1\nline2\nline3", false)]
+    fn test_regex_matches(#[case] pattern: &str, #[case] text: &str, #[case] expected: bool) {
+        assert_eq!(regex_matches(pattern, text), expected);
+    }
+
+    // Signature must match `sqllogictest::Normalizer` (`fn(&String) -> String`).
+    #[allow(clippy::ptr_arg)]
+    fn identity(s: &String) -> String {
+        s.clone()
+    }
+
+    #[test]
+    fn validator_regex_directive_spans_multiple_lines() {
+        // A single `<REGEX>:`/`<!REGEX>:` directive matches a multi-row,
+        // multi-line actual block (e.g. an EXPLAIN plan rendered as JSON).
+        let actual = vec![vec![
+            "physical_plan".to_string(),
+            "[\n  {\n    \"SELECT projections\": \"str\"\n  }\n]".to_string(),
+        ]];
+
+        assert!(duckdb_validator(
+            identity,
+            &actual,
+            &["<REGEX>:SELECT projections".to_string()]
+        ));
+        assert!(!duckdb_validator(
+            identity,
+            &actual,
+            &["<REGEX>:NOT PRESENT".to_string()]
+        ));
+
+        // Negated directive: passes only when the pattern is absent.
+        assert!(duckdb_validator(
+            identity,
+            &actual,
+            &["<!REGEX>:NOT PRESENT".to_string()]
+        ));
+        assert!(!duckdb_validator(
+            identity,
+            &actual,
+            &["<!REGEX>:SELECT projections".to_string()]
+        ));
+    }
+
+    #[test]
+    fn validator_without_marker_requires_exact_match() {
+        let actual = vec![vec!["5".to_string()], vec!["3".to_string()]];
+        assert!(duckdb_validator(
+            identity,
+            &actual,
+            &["5".to_string(), "3".to_string()]
+        ));
+        assert!(!duckdb_validator(
+            identity,
+            &actual,
+            &["5".to_string(), "2".to_string()]
+        ));
     }
 
     #[test]
