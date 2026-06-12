@@ -1941,7 +1941,12 @@ export function Chart({ slug, name, index, groupSlug, initialPayload }: ChartIsl
           </div>
         </div>
       </div>
-      {loading && <div className="chart-loading">loading…</div>}
+      {loading && (
+        <div className="chart-loading" role="status" aria-live="polite">
+          <span className="chart-spinner" aria-hidden="true" />
+          <span className="chart-loading-text">loading…</span>
+        </div>
+      )}
       {error && (
         <div className="chart-error">
           <span>{error}</span>

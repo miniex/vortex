@@ -1175,6 +1175,42 @@ main > .chart-card:not(.chart-grid .chart-card) .chart-wrap {
   background: var(--code-bg);
   color: var(--muted);
   border: 1px solid var(--border);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.chart-spinner {
+  display: inline-block;
+  width: 0.7rem;
+  height: 0.7rem;
+  border: 2px solid color-mix(in srgb, var(--muted) 35%, transparent);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: chart-spin 0.7s linear infinite;
+}
+@keyframes chart-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+/* The chip's loading state gets a small inline spinner for consistency. */
+.chart-window-chip[data-state='loading']::before {
+  content: '';
+  display: inline-block;
+  width: 0.6rem;
+  height: 0.6rem;
+  margin-right: 0.3rem;
+  vertical-align: -0.05rem;
+  border: 2px solid color-mix(in srgb, var(--muted) 35%, transparent);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: chart-spin 0.7s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .chart-spinner,
+  .chart-window-chip[data-state='loading']::before {
+    animation: none;
+  }
 }
 .chart-error {
   background: var(--bad);

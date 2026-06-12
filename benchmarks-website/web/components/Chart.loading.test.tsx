@@ -459,6 +459,20 @@ describe('Chart opt-in full-history loading', () => {
     });
   });
 
+  describe('PR-5.0.95 loading spinner', () => {
+    it('renders an animated spinner element (not bare text) while loading', async () => {
+      // A never-resolving window fetch keeps the card in the loading state.
+      vi.stubGlobal('fetch', (url: string | URL) => {
+        fetchCalls.push(String(url));
+        return new Promise<Response>(() => {});
+      });
+      await renderOpenGroup();
+      const loading = container.querySelector('.chart-loading');
+      expect(loading).not.toBeNull();
+      expect(loading?.querySelector('.chart-spinner')).not.toBeNull();
+    });
+  });
+
   describe('PR-5.0.95 initial-fetch retry', () => {
     // Overrides the `beforeEach` default `fetch` stub so the `?n=100` fetch can
     // be rejected on demand; `afterEach`'s `vi.unstubAllGlobals()` still cleans
