@@ -45,6 +45,15 @@ export const HOVER_PREFETCH_PRIORITY = 500_000;
  * full-history prefetch starts, so a mouse sweep across the page fetches
  * nothing while a deliberate hover has data ready by the time the user acts. */
 export const HOVER_DWELL_MS = 600;
+/** Per-fetch timeout (ms) for the chart `?n=100` / `?n=all` requests. A stalled
+ * request aborts at this bound instead of spinning the loading indicator
+ * forever. 30s is generous headroom over a cold Vercel function first-hit
+ * (~7.8s measured) so a slow-but-live request is not falsely aborted. */
+export const FETCH_TIMEOUT_MS = 30000;
+/** `IntersectionObserver` root margin for landing-page lazy hydration: a chart
+ * begins hydrating slightly before it scrolls into view so it is rarely blank
+ * by the time the user reaches it. */
+export const LAZY_HYDRATION_ROOT_MARGIN = '300px 0px';
 
 /**
  * Hard cap on how many distinct commit indices (x-positions) a chart renders at
