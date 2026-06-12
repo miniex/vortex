@@ -33,6 +33,7 @@ import {
   truncate,
   visibleRange,
 } from './chart-format';
+import { HOVER_DWELL_MS, HOVER_PREFETCH_PRIORITY, INTERACTION_FULL_PRIORITY } from './chart-format';
 import type { ChartResponse, CommitPoint } from './queries';
 
 function commit(sha: string): CommitPoint {
@@ -443,5 +444,16 @@ describe('clampRangeWindow', () => {
   it('clamps requested bounds into [0, maxIdx]', () => {
     expect(clampRangeWindow(10, 3, 7)).toEqual({ min: 3, max: 7 });
     expect(clampRangeWindow(10, -5, 100)).toEqual({ min: 0, max: 10 });
+  });
+});
+
+describe('hover-dwell prefetch constants', () => {
+  it('dwell is a deliberate ~600ms pause, not an accidental sweep', () => {
+    expect(HOVER_DWELL_MS).toBe(600);
+  });
+
+  it('hover-prefetch priority sits above background (0) and below direct interaction', () => {
+    expect(HOVER_PREFETCH_PRIORITY).toBeGreaterThan(0);
+    expect(HOVER_PREFETCH_PRIORITY).toBeLessThan(INTERACTION_FULL_PRIORITY);
   });
 });

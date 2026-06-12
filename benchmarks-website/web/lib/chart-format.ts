@@ -38,6 +38,13 @@ export const FULL_HISTORY_CONCURRENCY = 2;
 export const GROUP_OPEN_PRIORITY_STEP = 100;
 /** Priority for a full-history fetch promoted by direct user interaction. */
 export const INTERACTION_FULL_PRIORITY = 1_000_000;
+/** A silent hover-dwell prefetch outranks idle background work but yields to a
+ * direct user interaction (chip click, pan/zoom into the unloaded region). */
+export const HOVER_PREFETCH_PRIORITY = 500_000;
+/** How long the pointer must rest on one chart card before the silent
+ * full-history prefetch starts, so a mouse sweep across the page fetches
+ * nothing while a deliberate hover has data ready by the time the user acts. */
+export const HOVER_DWELL_MS = 600;
 
 /**
  * Hard cap on how many distinct commit indices (x-positions) a chart renders at
