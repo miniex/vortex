@@ -112,7 +112,7 @@ describe('Chart opt-in full-history loading', () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    return container.querySelector('[data-role="window-chip"]');
+    return container.querySelector<HTMLButtonElement>('[data-role="window-chip"]');
   }
 
   it('opening a group issues the windowed fetch but NO full-history warmup', async () => {
@@ -180,5 +180,45 @@ describe('Chart opt-in full-history loading', () => {
     expect(chip?.dataset.state).toBe('error');
     expect(chip?.textContent).toBe('retry');
     expect(chip?.disabled).toBe(false);
+  });
+
+  it('a deliberate dwell prefetches full history; a brief hover does not', async () => {
+    await renderOpenGroup();
+    const card = container.querySelector('.chart-card') as HTMLElement;
+    vi.useFakeTimers();
+    card.dispatchEvent(new Event('pointerenter'));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(599);
+    });
+    expect(fetchCalls.some((u) => u.includes('n=all'))).toBe(false);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2);
+    });
+    expect(fetchCalls.some((u) => u.includes('n=all'))).toBe(true);
+  });
+
+  it('pointerleave before the dwell threshold cancels the prefetch', async () => {
+    await renderOpenGroup();
+    const card = container.querySelector('.chart-card') as HTMLElement;
+    vi.useFakeTimers();
+    card.dispatchEvent(new Event('pointerenter'));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    card.dispatchEvent(new Event('pointerleave'));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(600);
+    });
+    expect(fetchCalls.some((u) => u.includes('n=all'))).toBe(false);
+  });
+
+  it('hover reveals the "load all N" action without fetching', async () => {
+    const chip = await renderOpenGroup();
+    const card = container.querySelector('.chart-card') as HTMLElement;
+    card.dispatchEvent(new Event('pointerenter'));
+    expect(chip?.textContent).toBe('load all 3,572');
+    expect(fetchCalls.some((u) => u.includes('n=all'))).toBe(false);
+    card.dispatchEvent(new Event('pointerleave'));
+    expect(chip?.textContent).toBe('latest 100 of 3,572');
   });
 });

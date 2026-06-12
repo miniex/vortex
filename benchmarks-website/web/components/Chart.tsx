@@ -1043,6 +1043,38 @@ class ChartController {
     void this.ensureFullHistory(INTERACTION_FULL_PRIORITY);
   }
 
+  /** Pointer resting on the card: reveal the chip's action immediately and arm
+   * the dwell-prefetch timer. Only a deliberate dwell (not a sweep) fetches. */
+  onCardHoverStart(): void {
+    const state = this.state;
+    if (state.disposed) {
+      return;
+    }
+    state.hovering = true;
+    this.syncWindowChip();
+    if (state.fullLoaded || state.fullFetchPending || state.hoverDwellTimer !== null) {
+      return;
+    }
+    state.hoverDwellTimer = setTimeout(() => {
+      state.hoverDwellTimer = null;
+      if (state.disposed) {
+        return;
+      }
+      void this.ensureFullHistory(HOVER_PREFETCH_PRIORITY);
+    }, HOVER_DWELL_MS);
+  }
+
+  /** Pointer left the card: restore the chip label and cancel a pending dwell. */
+  onCardHoverEnd(): void {
+    const state = this.state;
+    state.hovering = false;
+    if (state.hoverDwellTimer !== null) {
+      clearTimeout(state.hoverDwellTimer);
+      state.hoverDwellTimer = null;
+    }
+    this.syncWindowChip();
+  }
+
   /** Cap the slider's `max` to the chart's full x-axis length; for a virtual
    * latest-100 payload this is intentionally larger than the loaded count so
    * "show all" can expose the unloaded older range while the full-history
@@ -1391,6 +1423,10 @@ class ChartController {
   destroy(): void {
     this.state.disposed = true;
     this.aborter.abort();
+    if (this.state.hoverDwellTimer !== null) {
+      clearTimeout(this.state.hoverDwellTimer);
+      this.state.hoverDwellTimer = null;
+    }
     this.state.chart?.destroy();
     this.state.chart = null;
   }
@@ -1512,6 +1548,15 @@ export function Chart({ slug, name, index, groupSlug, initialPayload }: ChartIsl
     const group = card.closest('.group-details');
     const details = group?.querySelector('details.group-disclosure') as HTMLDetailsElement | null;
     const cleanups: (() => void)[] = [];
+
+    const onCardEnter = (): void => controller.onCardHoverStart();
+    const onCardLeave = (): void => controller.onCardHoverEnd();
+    card.addEventListener('pointerenter', onCardEnter);
+    card.addEventListener('pointerleave', onCardLeave);
+    cleanups.push(() => {
+      card.removeEventListener('pointerenter', onCardEnter);
+      card.removeEventListener('pointerleave', onCardLeave);
+    });
 
     // The scope slider binds a THROTTLED native `input` listener (NOT
     // `change`, which only fires on release) so dragging re-renders
