@@ -596,11 +596,35 @@ describe('PR-5.0.97 group-bundle hydration', () => {
 
     // Settle the bundle (an aborted fetch would normally reject, but resolving it
     // here exercises the worst case: the `.then` fires after the close abort ran).
+    // The close-path continuation is a deep promise chain (`bundleQueue` task
+    // `.then` -> entry resolve -> `ensureGroupBundle` settle -> the joined card
+    // `.then` that evaluates the `groupIsOpen` guard -> a per-chart fetch on the
+    // pre-fix path). A fixed tick count sits at the edge of how many microtask
+    // hops that needs and flakes on a cold start, so drain microtasks until the
+    // fetch count has stopped changing rather than counting hops by hand. The
+    // "stable across consecutive drains" requirement is what makes this a real
+    // pin: on the pre-fix path the suppressed-by-the-guard `/api/chart/` fetch
+    // surfaces several hops after the bundle settles (it routes through the
+    // `hydrationQueue`), and this loop keeps draining until that late fetch would
+    // have appeared, so a regression cannot slip through as a premature pass.
     await act(async () => {
       resolveBundle?.();
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
+      // A generous bounded drain: settle when the fetch count holds steady across
+      // `stableThreshold` consecutive empty microtask flushes, capped so a hang
+      // fails the test rather than spinning forever.
+      const maxFlushes = 200;
+      const stableThreshold = 10;
+      let stableFlushes = 0;
+      let lastCount = fetchCalls.length;
+      for (let i = 0; i < maxFlushes && stableFlushes < stableThreshold; i++) {
+        await Promise.resolve();
+        if (fetchCalls.length === lastCount) {
+          stableFlushes += 1;
+        } else {
+          lastCount = fetchCalls.length;
+          stableFlushes = 0;
+        }
+      }
     });
 
     // The guard must have suppressed the per-chart fallback for the closed group.
