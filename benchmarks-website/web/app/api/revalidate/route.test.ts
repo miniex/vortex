@@ -35,10 +35,22 @@ describe('POST /api/revalidate', () => {
     expect(res.headers.get('cache-control')).toBeNull();
   });
 
+  it('503s and does not revalidate when the token env is explicitly empty (fail closed)', async () => {
+    process.env.BENCH_REVALIDATE_TOKEN = '';
+    const res = await POST(post('anything'));
+    expect(res.status).toBe(503);
+    expect(revalidateTag).not.toHaveBeenCalled();
+  });
+
   it('401s on a missing or wrong token', async () => {
     process.env.BENCH_REVALIDATE_TOKEN = 'secret-token-value';
     expect((await POST(post(null))).status).toBe(401);
+    // Short wrong token (length mismatch, returns before timingSafeEqual).
     expect((await POST(post('wrong'))).status).toBe(401);
+    // Same-length wrong token (exercises the timingSafeEqual rejection path).
+    expect((await POST(post('secret-token-valuX'))).status).toBe(401);
+    // Empty bearer token.
+    expect((await POST(post(''))).status).toBe(401);
     expect(revalidateTag).not.toHaveBeenCalled();
   });
 
