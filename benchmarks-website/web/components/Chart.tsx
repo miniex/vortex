@@ -545,13 +545,15 @@ class ChartController {
         if (state.disposed) {
           return;
         }
-        this.cb.setLoading(false);
-        // A close/destroy cancellation aborts with `AbortError`: stay silent, the
-        // card re-hydrates on reopen. A timeout (`TimeoutError`) or a genuine
-        // network/HTTP failure surfaces the error indicator.
+        // A close/destroy cancellation aborts with `AbortError`: stay silent and
+        // do NOT touch the loading state, which may now belong to a fresh fetch
+        // scheduled after a reopen (clearing it here would extinguish that
+        // newer fetch's spinner). A timeout (`TimeoutError`) or a genuine
+        // network/HTTP failure clears loading and surfaces the error indicator.
         if (err instanceof DOMException && err.name === 'AbortError') {
           return;
         }
+        this.cb.setLoading(false);
         const message =
           err instanceof DOMException && err.name === 'TimeoutError'
             ? 'timed out'

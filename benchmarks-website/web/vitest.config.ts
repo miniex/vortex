@@ -30,5 +30,9 @@ export default defineConfig({
     // on a cold image cache, so the hook + test budgets are generous.
     testTimeout: 120_000,
     hookTimeout: 180_000,
+    // Restore `vi.spyOn` wrappers between tests so a spy on a module-singleton
+    // (e.g. `hydrationQueue.schedule`) does not leak its instrumentation into
+    // later tests in the same file.
+    restoreMocks: true,
   },
 });
