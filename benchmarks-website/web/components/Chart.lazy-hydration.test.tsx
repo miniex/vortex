@@ -55,7 +55,12 @@ function windowedPayload(total: number) {
   return {
     display_name: 'q',
     unit_kind: 'time_ns',
-    history: { total_commits: total, start_index: total - 100, loaded_commits: 100, complete: false },
+    history: {
+      total_commits: total,
+      start_index: total - 100,
+      loaded_commits: 100,
+      complete: false,
+    },
     commits: Array.from({ length: 100 }, (_, i) => ({
       sha: `sha${i}`,
       timestamp: `2026-01-01T00:00:${String(i).padStart(2, '0')}Z`,
