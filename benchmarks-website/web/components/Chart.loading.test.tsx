@@ -124,4 +124,61 @@ describe('Chart opt-in full-history loading', () => {
     expect(fullFetches).toHaveLength(0);
     expect(scheduleSpy).not.toHaveBeenCalled();
   });
+
+  it('shows the window chip "latest 100 of 3,572" for a windowed chart', async () => {
+    const chip = await renderOpenGroup();
+    expect(chip).not.toBeNull();
+    expect(chip?.hasAttribute('hidden')).toBe(false);
+    expect(chip?.dataset.state).toBe('windowed');
+    expect(chip?.textContent).toBe('latest 100 of 3,572');
+  });
+
+  it('hides the chip for a chart born with its complete history', async () => {
+    responders.push({ match: (u) => u.includes('n=100'), respond: () => Promise.resolve(jsonResponse(completePayload(40))) });
+    const chip = await renderOpenGroup();
+    expect(chip?.hasAttribute('hidden')).toBe(true);
+  });
+
+  it('chip click loads full history at top priority and reaches "all N"', async () => {
+    let resolveFull: (r: Response) => void = () => {};
+    responders.push({
+      match: (u) => u.includes('n=all'),
+      respond: () => new Promise<Response>((res) => { resolveFull = res; }),
+    });
+    const chip = await renderOpenGroup();
+    await act(async () => {
+      chip?.click();
+      await Promise.resolve();
+    });
+    expect(fetchCalls.some((u) => u.includes('n=all'))).toBe(true);
+    expect(chip?.dataset.state).toBe('loading');
+    await act(async () => {
+      resolveFull(jsonResponse(completePayload(3572)));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(chip?.dataset.state).toBe('complete');
+    expect(chip?.textContent).toBe('all 3,572');
+  });
+
+  it('a failed full fetch surfaces a retry affordance', async () => {
+    let rejectFull: (e: unknown) => void = () => {};
+    responders.push({
+      match: (u) => u.includes('n=all'),
+      respond: () => new Promise<Response>((_, rej) => { rejectFull = rej; }),
+    });
+    const chip = await renderOpenGroup();
+    await act(async () => {
+      chip?.click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      rejectFull(new Error('boom'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(chip?.dataset.state).toBe('error');
+    expect(chip?.textContent).toBe('retry');
+    expect(chip?.disabled).toBe(false);
+  });
 });

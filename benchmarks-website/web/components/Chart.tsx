@@ -24,6 +24,8 @@ import {
   FETCH_N,
   firstLine,
   formatDisplayValue,
+  HOVER_DWELL_MS,
+  HOVER_PREFETCH_PRIORITY,
   IDENTITY_UNIT,
   INTERACTION_FULL_PRIORITY,
   labelForCommit,
@@ -117,6 +119,15 @@ interface CardState {
   initialFetchEntry: QueueEntry | null;
   fullFetchEntry: QueueEntry | null;
   fullFetchPending: Promise<void> | null;
+  /** True once this card has rendered a bounded window (so the chip is shown);
+   * a chart born complete never sets it and shows no chip. */
+  everWindowed: boolean;
+  /** The most recent full-history fetch failed; the chip offers a retry. */
+  chipError: boolean;
+  /** The pointer is currently resting on this card (chip shows the action). */
+  hovering: boolean;
+  /** Pending hover-dwell prefetch timer; cleared on `pointerleave`/destroy. */
+  hoverDwellTimer: ReturnType<typeof setTimeout> | null;
   yUserSet: boolean;
   stripRender: (() => void) | null;
   rebuild: ((chart: ChartJs) => void) | null;
@@ -131,6 +142,7 @@ interface CardElements {
   tooltipHost: HTMLDivElement | null;
   slider: HTMLInputElement | null;
   badge: HTMLSpanElement | null;
+  chip: HTMLButtonElement | null;
   strip: HTMLDivElement | null;
   stripWindow: HTMLDivElement | null;
 }
@@ -381,6 +393,10 @@ class ChartController {
       initialFetchEntry: null,
       fullFetchEntry: null,
       fullFetchPending: null,
+      everWindowed: false,
+      chipError: false,
+      hovering: false,
+      hoverDwellTimer: null,
       yUserSet: false,
       stripRender: null,
       rebuild: null,
@@ -394,6 +410,10 @@ class ChartController {
     const normalized = normalizeChartPayload(payload);
     this.state.payload = normalized;
     this.state.fullLoaded = normalized.history.complete;
+    if (!normalized.history.complete) {
+      this.state.everWindowed = true;
+    }
+    this.syncWindowChip();
     if (this.groupSlug) {
       noteGroupSeries(this.groupSlug, normalized.series_meta);
     }
@@ -452,6 +472,10 @@ class ChartController {
         const normalized = normalizeChartPayload(raw as ChartResponse);
         state.payload = normalized;
         state.fullLoaded = normalized.history.complete;
+        if (!normalized.history.complete) {
+          state.everWindowed = true;
+        }
+        this.syncWindowChip();
         this.cb.setLoading(false);
         if (this.groupSlug) {
           noteGroupSeries(this.groupSlug, normalized.series_meta);
@@ -523,20 +547,24 @@ class ChartController {
         }
         this.replaceChartPayload(full as ChartResponse);
         state.fullLoaded = true;
+        state.chipError = false;
         this.cb.setLoading(false);
         if (!state.chart && this.groupIsOpen()) {
           void this.maybeConstruct();
         }
       })
       .catch((err: unknown) => {
-        // Quiet: the latest-100 payload is still usable. Surface to the
-        // console for debugging.
+        // Quiet: the latest-100 payload is still usable. Surface to the console
+        // for debugging; the chip exposes the retry affordance.
         console.warn('bench: full history fetch failed', err);
+        state.chipError = true;
       })
       .then(() => {
         state.fullFetchEntry = null;
         state.fullFetchPending = null;
+        this.syncWindowChip();
       });
+    this.syncWindowChip();
     return state.fullFetchPending;
   }
 
@@ -955,6 +983,66 @@ class ChartController {
     );
   }
 
+  /** Render the per-card window chip from controller state. Imperative, like
+   * `syncDownsampleBadge`: the chip is hidden for charts born complete, and
+   * otherwise reflects windowed → loading → complete, with an error → retry
+   * path and a hover-revealed "load all N" action. */
+  private syncWindowChip(): void {
+    const chip = this.els().chip;
+    if (!chip) {
+      return;
+    }
+    const state = this.state;
+    const payload = state.payload;
+    if (!payload || !state.everWindowed) {
+      chip.setAttribute('hidden', '');
+      chip.dataset.state = 'hidden';
+      chip.textContent = '';
+      chip.disabled = true;
+      chip.removeAttribute('title');
+      return;
+    }
+    const total = payload.history.total_commits.toLocaleString();
+    const loaded = payload.history.loaded_commits.toLocaleString();
+    chip.removeAttribute('hidden');
+    if (state.fullLoaded) {
+      chip.dataset.state = 'complete';
+      chip.disabled = true;
+      chip.textContent = `all ${total}`;
+      chip.removeAttribute('title');
+      return;
+    }
+    if (state.fullFetchPending) {
+      chip.dataset.state = 'loading';
+      chip.disabled = true;
+      chip.textContent = `loading all ${total}…`;
+      chip.removeAttribute('title');
+      return;
+    }
+    if (state.chipError) {
+      chip.dataset.state = 'error';
+      chip.disabled = false;
+      chip.textContent = 'retry';
+      chip.setAttribute('title', 'Loading the full history failed. Click to retry.');
+      return;
+    }
+    chip.dataset.state = 'windowed';
+    chip.disabled = false;
+    chip.textContent = state.hovering ? `load all ${total}` : `latest ${loaded} of ${total}`;
+    chip.setAttribute('title', `Showing the latest ${loaded} of ${total} commits. Click to load the full history.`);
+  }
+
+  /** Window-chip click: load the full history at top priority, or retry after a
+   * failure. A no-op once full history is loaded or a fetch is already pending. */
+  onWindowChipClick(): void {
+    const state = this.state;
+    if (state.disposed || state.fullLoaded || state.fullFetchPending) {
+      return;
+    }
+    state.chipError = false;
+    void this.ensureFullHistory(INTERACTION_FULL_PRIORITY);
+  }
+
   /** Cap the slider's `max` to the chart's full x-axis length; for a virtual
    * latest-100 payload this is intentionally larger than the loaded count so
    * "show all" can expose the unloaded older range while the full-history
@@ -1332,6 +1420,7 @@ export function Chart({ slug, name, index, groupSlug, initialPayload }: ChartIsl
   const tooltipHostRef = useRef<HTMLDivElement>(null);
   const sliderRef = useRef<HTMLInputElement>(null);
   const badgeRef = useRef<HTMLSpanElement>(null);
+  const chipRef = useRef<HTMLButtonElement>(null);
   const stripRef = useRef<HTMLDivElement>(null);
   const stripWindowRef = useRef<HTMLDivElement>(null);
 
@@ -1400,6 +1489,7 @@ export function Chart({ slug, name, index, groupSlug, initialPayload }: ChartIsl
         tooltipHost: tooltipHostRef.current,
         slider: sliderRef.current,
         badge: badgeRef.current,
+        chip: chipRef.current,
         strip: stripRef.current,
         stripWindow: stripWindowRef.current,
       }),
@@ -1548,6 +1638,14 @@ export function Chart({ slug, name, index, groupSlug, initialPayload }: ChartIsl
           data-role="downsample-badge"
           hidden
           ref={badgeRef}
+        />
+        <button
+          type="button"
+          className="chart-window-chip"
+          data-role="window-chip"
+          hidden
+          ref={chipRef}
+          onClick={() => controllerRef.current?.onWindowChipClick()}
         />
       </h3>
       <div className="toolbar toolbar--card" aria-label="Chart controls">
