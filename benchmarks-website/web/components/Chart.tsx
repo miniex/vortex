@@ -78,9 +78,10 @@ import type { ChartResponse } from '@/lib/queries';
  *   group store's current state (group Y), since the store outlives mounts.
  * - v3 wired group hydration per group (shard fetches); v4 has no shard route,
  *   so each island lazily fetches its own `/api/chart/{slug}?n=100` through the
- *   shared bounded [`hydrationQueue`] on group open (or pointer intent), then
- *   queues the one-shot `?n=all` upgrade through [`fullHistoryQueue`]. Fetch
- *   counts and concurrency caps match v3's shard pipeline shape.
+ *   shared bounded [`hydrationQueue`] on group open (or pointer intent). The
+ *   one-shot `?n=all` upgrade through [`fullHistoryQueue`] is opt-in: it runs
+ *   only on per-chart intent (window-chip click, hover dwell, or pan/zoom into
+ *   the unloaded region), never as an automatic group-open warmup.
  * - High-frequency mutations (slider value, badge text, range-strip geometry,
  *   tooltip markup, `dataset.data` rebuilds) stay imperative on refs, exactly
  *   as v3 mutated the DOM; React state is reserved for low-frequency bits (the
@@ -470,9 +471,10 @@ class ChartController {
   }
 
   /**
-   * Group-open hydration: fetch this chart's latest-100 payload with the
-   * group's base priority, then queue the background full-history upgrade,
-   * matching v3's shard-zero-then-warmup ordering.
+   * Group-open hydration: fetch this chart's latest-100 window at the group's
+   * base priority and construct. Full history is NOT warmed here; it loads only
+   * on explicit per-chart intent (window-chip click, hover dwell, or pan/zoom
+   * into the unloaded region) so opening a group costs only the cheap windows.
    */
   onGroupOpen(): void {
     const priority = nextGroupOpenPriority();
@@ -481,14 +483,14 @@ class ChartController {
         return;
       }
       void this.maybeConstruct();
-      void this.ensureFullHistory(priority);
     });
   }
 
   /**
    * Queue the one-shot `?n=all` full-history upgrade (or promote the queued
-   * entry's priority). This is the ONLY chart refetch after the initial load;
-   * pan/zoom/slider interaction never refetches beyond promoting this hop.
+   * entry's priority). Triggered only by explicit intent — window-chip click
+   * (`INTERACTION_FULL_PRIORITY`), hover dwell (`HOVER_PREFETCH_PRIORITY`), or
+   * pan/zoom touching the unloaded region — never as an automatic warmup.
    */
   ensureFullHistory(priority: number): Promise<void> {
     const state = this.state;
