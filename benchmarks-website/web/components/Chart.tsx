@@ -128,6 +128,9 @@ interface CardState {
   hovering: boolean;
   /** Pending hover-dwell prefetch timer; cleared on `pointerleave`/destroy. */
   hoverDwellTimer: ReturnType<typeof setTimeout> | null;
+  /** A full-history fetch returned 404: there is nothing beyond the window to
+   * load, so the chip stops offering the action and hovers stop re-fetching. */
+  fullUnavailable: boolean;
   yUserSet: boolean;
   stripRender: (() => void) | null;
   rebuild: ((chart: ChartJs) => void) | null;
@@ -397,6 +400,7 @@ class ChartController {
       chipError: false,
       hovering: false,
       hoverDwellTimer: null,
+      fullUnavailable: false,
       yUserSet: false,
       stripRender: null,
       rebuild: null,
@@ -542,7 +546,11 @@ class ChartController {
     state.fullFetchEntry = entry;
     state.fullFetchPending = entry.promise
       .then((full) => {
-        if (state.disposed || full === null) {
+        if (state.disposed) {
+          return;
+        }
+        if (full === null) {
+          state.fullUnavailable = true;
           return;
         }
         this.replaceChartPayload(full as ChartResponse);
@@ -1012,6 +1020,13 @@ class ChartController {
       chip.removeAttribute('title');
       return;
     }
+    if (state.fullUnavailable) {
+      chip.dataset.state = 'windowed';
+      chip.disabled = true;
+      chip.textContent = `latest ${loaded} of ${total}`;
+      chip.removeAttribute('title');
+      return;
+    }
     if (state.fullFetchPending) {
       chip.dataset.state = 'loading';
       chip.disabled = true;
@@ -1029,14 +1044,17 @@ class ChartController {
     chip.dataset.state = 'windowed';
     chip.disabled = false;
     chip.textContent = state.hovering ? `load all ${total}` : `latest ${loaded} of ${total}`;
-    chip.setAttribute('title', `Showing the latest ${loaded} of ${total} commits. Click to load the full history.`);
+    chip.setAttribute(
+      'title',
+      `Showing the latest ${loaded} of ${total} commits. Click to load the full history.`,
+    );
   }
 
   /** Window-chip click: load the full history at top priority, or retry after a
    * failure. A no-op once full history is loaded or a fetch is already pending. */
   onWindowChipClick(): void {
     const state = this.state;
-    if (state.disposed || state.fullLoaded || state.fullFetchPending) {
+    if (state.disposed || state.fullLoaded || state.fullFetchPending || state.fullUnavailable) {
       return;
     }
     state.chipError = false;
@@ -1052,7 +1070,12 @@ class ChartController {
     }
     state.hovering = true;
     this.syncWindowChip();
-    if (state.fullLoaded || state.fullFetchPending || state.hoverDwellTimer !== null) {
+    if (
+      state.fullLoaded ||
+      state.fullFetchPending ||
+      state.fullUnavailable ||
+      state.hoverDwellTimer !== null
+    ) {
       return;
     }
     state.hoverDwellTimer = setTimeout(() => {

@@ -11,7 +11,10 @@ import {
   escapeHtml,
   firstLine,
   formatDisplayValue,
+  HOVER_DWELL_MS,
+  HOVER_PREFETCH_PRIORITY,
   IDENTITY_UNIT,
+  INTERACTION_FULL_PRIORITY,
   labelForCommit,
   lttbIndices,
   magnitudeReference,
@@ -33,7 +36,6 @@ import {
   truncate,
   visibleRange,
 } from './chart-format';
-import { HOVER_DWELL_MS, HOVER_PREFETCH_PRIORITY, INTERACTION_FULL_PRIORITY } from './chart-format';
 import type { ChartResponse, CommitPoint } from './queries';
 
 function commit(sha: string): CommitPoint {

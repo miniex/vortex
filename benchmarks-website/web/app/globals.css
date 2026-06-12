@@ -1001,6 +1001,44 @@ body.bench-prebuilding .group-disclosure:not([open]) ~ .chart-grid {
   border-color: color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
+.chart-window-chip {
+  font-family: inherit;
+  font-size: 0.7rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  line-height: 1.4;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  background: var(--code-bg);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.chart-window-chip[hidden] {
+  display: none;
+}
+.chart-window-chip:disabled {
+  cursor: default;
+}
+/* The windowed state is a quiet pill by default; resting on the card (or
+   focusing the chip) reveals it as the accent-colored "load all N" action. */
+.chart-card:hover .chart-window-chip[data-state='windowed']:not(:disabled),
+.chart-window-chip[data-state='windowed']:not(:disabled):hover,
+.chart-window-chip[data-state='windowed']:not(:disabled):focus-visible {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.chart-window-chip[data-state='loading'] {
+  cursor: progress;
+}
+.chart-window-chip[data-state='error'] {
+  background: color-mix(in srgb, var(--bad) 12%, transparent);
+  color: var(--bad);
+  border-color: color-mix(in srgb, var(--bad) 35%, transparent);
+}
+
 .chart-grid {
   width: 100%;
   max-width: none;

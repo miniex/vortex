@@ -28,7 +28,12 @@ function windowedPayload(total: number) {
   return {
     display_name: 'tpch q1',
     unit_kind: 'time_ns',
-    history: { total_commits: total, start_index: total - 100, loaded_commits: 100, complete: false },
+    history: {
+      total_commits: total,
+      start_index: total - 100,
+      loaded_commits: 100,
+      complete: false,
+    },
     commits: Array.from({ length: 100 }, (_, i) => ({
       sha: `sha${i}`,
       timestamp: `2026-01-01T00:00:${String(i).padStart(2, '0')}Z`,
@@ -62,7 +67,10 @@ describe('Chart opt-in full-history loading', () => {
   let root: Root | null = null;
   let fetchCalls: string[];
   // Per-URL-substring responders; default resolves a windowed payload.
-  let responders: { match: (url: string) => boolean; respond: (url: string) => Promise<Response> }[];
+  let responders: {
+    match: (url: string) => boolean;
+    respond: (url: string) => Promise<Response>;
+  }[];
 
   beforeEach(() => {
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -118,7 +126,9 @@ describe('Chart opt-in full-history loading', () => {
   it('opening a group issues the windowed fetch but NO full-history warmup', async () => {
     const scheduleSpy = vi.spyOn(fullHistoryQueue, 'schedule');
     await renderOpenGroup();
-    const windowFetches = fetchCalls.filter((u) => u.includes('/api/chart/') && u.includes('n=100'));
+    const windowFetches = fetchCalls.filter(
+      (u) => u.includes('/api/chart/') && u.includes('n=100'),
+    );
     const fullFetches = fetchCalls.filter((u) => u.includes('n=all'));
     expect(windowFetches.length).toBeGreaterThanOrEqual(1);
     expect(fullFetches).toHaveLength(0);
@@ -134,7 +144,10 @@ describe('Chart opt-in full-history loading', () => {
   });
 
   it('hides the chip for a chart born with its complete history', async () => {
-    responders.push({ match: (u) => u.includes('n=100'), respond: () => Promise.resolve(jsonResponse(completePayload(40))) });
+    responders.push({
+      match: (u) => u.includes('n=100'),
+      respond: () => Promise.resolve(jsonResponse(completePayload(40))),
+    });
     const chip = await renderOpenGroup();
     expect(chip?.hasAttribute('hidden')).toBe(true);
   });
@@ -143,7 +156,10 @@ describe('Chart opt-in full-history loading', () => {
     let resolveFull: (r: Response) => void = () => {};
     responders.push({
       match: (u) => u.includes('n=all'),
-      respond: () => new Promise<Response>((res) => { resolveFull = res; }),
+      respond: () =>
+        new Promise<Response>((res) => {
+          resolveFull = res;
+        }),
     });
     const chip = await renderOpenGroup();
     await act(async () => {
@@ -165,7 +181,10 @@ describe('Chart opt-in full-history loading', () => {
     let rejectFull: (e: unknown) => void = () => {};
     responders.push({
       match: (u) => u.includes('n=all'),
-      respond: () => new Promise<Response>((_, rej) => { rejectFull = rej; }),
+      respond: () =>
+        new Promise<Response>((_, rej) => {
+          rejectFull = rej;
+        }),
     });
     const chip = await renderOpenGroup();
     await act(async () => {
@@ -210,6 +229,35 @@ describe('Chart opt-in full-history loading', () => {
       await vi.advanceTimersByTimeAsync(600);
     });
     expect(fetchCalls.some((u) => u.includes('n=all'))).toBe(false);
+  });
+
+  it('a 404 on full history is terminal: the chip stops offering the action', async () => {
+    responders.push({
+      match: (u) => u.includes('n=all'),
+      respond: () =>
+        Promise.resolve({
+          ok: false,
+          status: 404,
+          json: () => Promise.resolve(null),
+        } as unknown as Response),
+    });
+    const chip = await renderOpenGroup();
+    await act(async () => {
+      chip?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(chip?.dataset.state).toBe('windowed');
+    expect(chip?.disabled).toBe(true);
+    expect(chip?.textContent).toBe('latest 100 of 3,572');
+    const before = fetchCalls.filter((u) => u.includes('n=all')).length;
+    const card = container.querySelector('.chart-card') as HTMLElement;
+    vi.useFakeTimers();
+    card.dispatchEvent(new Event('pointerenter'));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(700);
+    });
+    expect(fetchCalls.filter((u) => u.includes('n=all')).length).toBe(before);
   });
 
   it('hover reveals the "load all N" action without fetching', async () => {
