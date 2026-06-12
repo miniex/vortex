@@ -58,6 +58,7 @@ import subprocess
 import sys
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -1086,6 +1087,53 @@ def connect_postgres(dsn: str, region: str | None):
     return conn
 
 
+def _http(method: str, url: str, token: str | None, timeout: float) -> bytes:
+    """Issue one HTTP request and return the body. Raises on any non-2xx or
+    transport error; callers in `refresh_site_cache` swallow those."""
+    headers = {"accept": "application/json"}
+    if token is not None:
+        headers["authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, method=method, headers=headers)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read()
+
+
+def _warm_default_windows(base: str, timeout: float) -> None:
+    """Best-effort warm pass: prime the freshly invalidated Data Cache for the
+    landing page and every group's default last-100 bundle, so the first human
+    request after an ingest is already hot. Each request is independent; one
+    failure does not abort the others."""
+    def warm(url: str) -> None:
+        try:
+            _http("GET", url, None, timeout)
+        except Exception as exc:  # noqa: BLE001 -- warm is best-effort.
+            print(f"warning: warm {url} failed: {exc}", file=sys.stderr)
+
+    warm(f"{base}/")
+    try:
+        groups_body = _http("GET", f"{base}/api/groups", None, timeout)
+        slugs = [g["slug"] for g in json.loads(groups_body).get("groups", []) if "slug" in g]
+    except Exception as exc:  # noqa: BLE001
+        print(f"warning: warm group discovery failed: {exc}", file=sys.stderr)
+        return
+    # A whole-bundle recompute is a few seconds cold, so warm with bounded
+    # concurrency rather than one slow serial pass.
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        pool.map(lambda s: warm(f"{base}/api/group/{s}?n=100"), slugs)
+
+
+def refresh_site_cache(base_url: str, token: str, timeout: float) -> None:
+    """Revalidate the site's Data Cache tag, then warm the default windows.
+    BEST-EFFORT: every failure is logged to stderr and swallowed so a cache
+    refresh can never change the ingest exit code."""
+    base = base_url.rstrip("/")
+    try:
+        _http("POST", f"{base}/api/revalidate", token, timeout)
+    except Exception as exc:  # noqa: BLE001 -- refresh must never raise into ingest.
+        print(f"warning: cache revalidate failed: {exc}", file=sys.stderr)
+    _warm_default_windows(base, timeout)
+
+
 def _main_postgres(args: argparse.Namespace) -> int:
     records = read_records(args.jsonl_path)
     # `build_commit` runs `git show <commit_sha>`, so the SHA must be in the runner's local git
@@ -1104,6 +1152,13 @@ def _main_postgres(args: argparse.Namespace) -> int:
             separators=(",", ":"),
         )
     )
+    # Best-effort site-cache refresh after a successful write. No-op unless both
+    # env vars are set (so the script stays inert until the ops wiring lands),
+    # and it can never fail the ingest.
+    base_url = os.environ.get("BENCH_SITE_BASE_URL")
+    revalidate_token = os.environ.get("BENCH_REVALIDATE_TOKEN")
+    if base_url and revalidate_token:
+        refresh_site_cache(base_url, revalidate_token, args.timeout)
     return 0
 
 
