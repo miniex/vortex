@@ -554,6 +554,7 @@ describe('Chart opt-in full-history loading', () => {
       // call setConstructed(true). The stub stores the config's labels/datasets so
       // the post-construction helpers (rebuildVisibleAndUpdate, bindRangeStrip,
       // applyFilters) can read chart.data and chart.options without throwing.
+      let stubConstructed = false;
       class StubChart {
         data: { labels: unknown[]; datasets: unknown[] };
         options: Record<string, unknown>;
@@ -564,6 +565,7 @@ describe('Chart opt-in full-history loading', () => {
             options: Record<string, unknown>;
           },
         ) {
+          stubConstructed = true;
           this.data = { labels: config.data.labels ?? [], datasets: config.data.datasets ?? [] };
           this.options = config.options ?? {};
         }
@@ -583,6 +585,11 @@ describe('Chart opt-in full-history loading', () => {
         }
       });
       expect(container.querySelector('.chart-placeholder')).toBeNull();
+      // Distinguish the construction path from the error path: both remove the
+      // placeholder, but only construction leaves .chart-error absent and sets
+      // stubConstructed. These two assertions make the test non-tautological.
+      expect(container.querySelector('.chart-error')).toBeNull();
+      expect(stubConstructed).toBe(true);
     });
   });
 
