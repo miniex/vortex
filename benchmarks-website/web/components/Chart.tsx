@@ -161,6 +161,8 @@ interface CardCallbacks {
   setY: (y: 'linear' | 'log') => void;
   setLoading: (on: boolean) => void;
   setError: (msg: string | null) => void;
+  /** Show/hide the initial-fetch retry control in the error region. */
+  setRetryable: (on: boolean) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -457,6 +459,7 @@ class ChartController {
       }
       if (showLoading) {
         this.cb.setLoading(true);
+        this.cb.setRetryable(false);
       }
       return state.initialFetchEntry.promise.then(
         () => undefined,
@@ -465,6 +468,7 @@ class ChartController {
     }
     if (showLoading) {
       this.cb.setLoading(true);
+      this.cb.setRetryable(false);
     }
     const url = `/api/chart/${encodeURIComponent(this.slug)}?n=${encodeURIComponent(CHART_FETCH_N)}`;
     const fc = new AbortController();
@@ -547,8 +551,26 @@ class ChartController {
               ? err.message
               : 'unknown error';
         this.cb.setError(`failed to load: ${message}`);
+        this.cb.setRetryable(true);
       },
     );
+  }
+
+  /** Re-issue the initial `?n=100` fetch after a failure/timeout. User-initiated
+   * (the error region's retry control), so it is naturally bounded; clears the
+   * error first and schedules at the top of the hydration queue. */
+  retryInitialPayload(): void {
+    if (this.state.disposed || this.state.payload) {
+      return;
+    }
+    this.cb.setError(null);
+    this.cb.setRetryable(false);
+    void this.ensureInitialPayload(0, true).then(() => {
+      if (this.state.disposed) {
+        return;
+      }
+      void this.maybeConstruct();
+    });
   }
 
   /**
@@ -1583,6 +1605,7 @@ export function Chart({ slug, name, index, groupSlug, initialPayload }: ChartIsl
   const [y, setY] = useState<'linear' | 'log'>('linear');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [retryable, setRetryable] = useState(false);
 
   // The live controller for the CURRENT mount. Created inside the mount effect
   // (not once per component instance) because `destroy()` is one-way and React
@@ -1649,7 +1672,7 @@ export function Chart({ slug, name, index, groupSlug, initialPayload }: ChartIsl
         strip: stripRef.current,
         stripWindow: stripWindowRef.current,
       }),
-      { setY, setLoading, setError },
+      { setY, setLoading, setError, setRetryable },
     );
     controllerRef.current = controller;
     if (initialPayload) {
@@ -1795,7 +1818,9 @@ export function Chart({ slug, name, index, groupSlug, initialPayload }: ChartIsl
   // whose only construction trigger already fired before a transient Chart.js
   // chunk-load failure.
   useEffect(() => {
-    if (error === null) {
+    // A retryable initial-fetch error owns its own dismissal (the user clicks
+    // retry), so the 4s construction-retry auto-dismiss does not apply to it.
+    if (error === null || retryable) {
       return;
     }
     const timer = setTimeout(() => {
@@ -1824,7 +1849,7 @@ export function Chart({ slug, name, index, groupSlug, initialPayload }: ChartIsl
     return () => {
       clearTimeout(timer);
     };
-  }, [error]);
+  }, [error, retryable]);
 
   return (
     <section className="chart-card" data-chart-index={index} data-chart-slug={slug} ref={cardRef}>
@@ -1916,7 +1941,25 @@ export function Chart({ slug, name, index, groupSlug, initialPayload }: ChartIsl
         </div>
       </div>
       {loading && <div className="chart-loading">loading…</div>}
-      {error && <div className="chart-error">{error}</div>}
+      {error && (
+        <div className="chart-error">
+          <span>{error}</span>
+          {retryable && (
+            <button
+              type="button"
+              className="chart-error-retry"
+              data-role="fetch-retry"
+              onClick={() => {
+                setError(null);
+                setRetryable(false);
+                controllerRef.current?.retryInitialPayload();
+              }}
+            >
+              retry
+            </button>
+          )}
+        </div>
+      )}
     </section>
   );
 }

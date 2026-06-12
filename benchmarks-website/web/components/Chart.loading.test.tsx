@@ -458,4 +458,48 @@ describe('Chart opt-in full-history loading', () => {
       vi.useRealTimers();
     });
   });
+
+  describe('PR-5.0.95 initial-fetch retry', () => {
+    function stubControllableWindowFetch(): {
+      rejectNext: (e: unknown) => void;
+      calls: () => number;
+    } {
+      let rejecter: (e: unknown) => void = () => {};
+      vi.stubGlobal('fetch', (url: string | URL) => {
+        const u = String(url);
+        fetchCalls.push(u);
+        if (u.includes('n=100')) {
+          return new Promise<Response>((_res, rej) => {
+            rejecter = rej;
+          });
+        }
+        return Promise.resolve(jsonResponse(windowedPayload(3572)));
+      });
+      return {
+        rejectNext: (e) => rejecter(e),
+        calls: () => fetchCalls.filter((u) => u.includes('n=100')).length,
+      };
+    }
+
+    it('a failed initial fetch surfaces a clickable retry that re-issues the fetch', async () => {
+      const ctl = stubControllableWindowFetch();
+      await renderOpenGroup();
+      expect(ctl.calls()).toBe(1);
+      await act(async () => {
+        ctl.rejectNext(new Error('boom'));
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      const retry = container.querySelector<HTMLButtonElement>(
+        '.chart-error [data-role="fetch-retry"]',
+      );
+      expect(retry).not.toBeNull();
+      await act(async () => {
+        retry?.click();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(ctl.calls()).toBe(2);
+    });
+  });
 });
