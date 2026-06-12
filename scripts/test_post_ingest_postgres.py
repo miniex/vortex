@@ -1065,6 +1065,11 @@ def test_real_connection_exposes_pgconn_ssl_in_use(schema_conn: psycopg.Connecti
 def test_main_postgres_composition(monkeypatch, capsys) -> None:
     # Pin the production --postgres CLI wiring (no DB): read_records -> build_commit ->
     # connect_postgres -> ingest_postgres -> compact JSON to stdout -> conn.close() in finally.
+    # Explicitly clear both refresh env vars so this test is robust to ambient env:
+    # the refresh branch is gated on both being set, and testing its skip is
+    # covered by test_post_ingest_revalidate.py.
+    monkeypatch.delenv("BENCH_SITE_BASE_URL", raising=False)
+    monkeypatch.delenv("BENCH_REVALIDATE_TOKEN", raising=False)
     closed = {"n": 0}
     conn = types.SimpleNamespace(close=lambda: closed.__setitem__("n", closed["n"] + 1))
     monkeypatch.setattr(post_ingest, "read_records", lambda path: [{"kind": "compression_size"}])
@@ -1078,6 +1083,7 @@ def test_main_postgres_composition(monkeypatch, capsys) -> None:
         git_dir=None,
         postgres="dsn",
         region=None,
+        timeout=30.0,
     )
     rc = post_ingest._main_postgres(args)
     assert rc == 0

@@ -1159,7 +1159,9 @@ def _main_postgres(args: argparse.Namespace) -> int:
     )
     # Best-effort site-cache refresh after a successful write. No-op unless both
     # env vars are set (so the script stays inert until the ops wiring lands),
-    # and it can never fail the ingest.
+    # and it can never fail the ingest. The ops prerequisite (setting the two env
+    # vars in Vercel and as GitHub secrets/vars) is documented in the "Ops
+    # prerequisite" section of .big-plans/ct__bench-v4-uiux-r3-design.md.
     base_url = os.environ.get("BENCH_SITE_BASE_URL")
     revalidate_token = os.environ.get("BENCH_REVALIDATE_TOKEN")
     if base_url and revalidate_token:

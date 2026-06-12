@@ -92,3 +92,171 @@ def test_refresh_swallows_all_failures(monkeypatch):
     monkeypatch.setattr(post_ingest.urllib.request, "urlopen", boom)
     # Must not raise: a cache-refresh failure can never fail an ingest.
     assert post_ingest.refresh_site_cache("https://example.test", "tok", 5.0) is None
+
+
+def test_warm_default_windows_issues_expected_gets(monkeypatch):
+    """The warm pass GETs the landing page, /api/groups, and one /api/group/{slug}?n=100
+    per discovered slug.
+
+    Order is non-deterministic (ThreadPoolExecutor), so we assert the SET of
+    warm URLs rather than a fixed sequence.
+    """
+    captured: list[str] = []
+
+    def fake_urlopen(req, timeout=None):
+        captured.append(req.full_url)
+        if req.full_url.endswith("/api/groups"):
+            body = b'{"groups":[{"slug":"g1"},{"slug":"g2"}]}'
+        else:
+            body = b"{}"
+        return _FakeResponse(body)
+
+    monkeypatch.setattr(post_ingest.urllib.request, "urlopen", fake_urlopen)
+    post_ingest.refresh_site_cache("https://example.test/", "tok", 5.0)
+
+    urls = set(captured)
+    # The revalidate POST is always first (tested separately); include it here
+    # so the assertion list is complete.
+    assert "https://example.test/api/revalidate" in urls
+    assert "https://example.test/" in urls
+    assert "https://example.test/api/groups" in urls
+    assert "https://example.test/api/group/g1?n=100" in urls
+    assert "https://example.test/api/group/g2?n=100" in urls
+
+
+def test_main_postgres_refresh_failure_still_exits_zero(monkeypatch, tmp_path):
+    """When refresh_site_cache raises (or fails), _main_postgres still returns 0.
+
+    This pins the "best-effort, never changes the exit code" contract: even if
+    the refresh throws, the successful write must be reported as exit code 0.
+    """
+    import types
+
+    # Provide the required env vars so the refresh branch is entered.
+    monkeypatch.setenv("BENCH_SITE_BASE_URL", "https://example.test")
+    monkeypatch.setenv("BENCH_REVALIDATE_TOKEN", "tok")
+
+    # Make urlopen raise so refresh_site_cache encounters a failure.
+    def boom(req, timeout=None):
+        raise OSError("network error")
+
+    monkeypatch.setattr(post_ingest.urllib.request, "urlopen", boom)
+
+    # Stub out all DB/git dependencies so _main_postgres reaches the refresh
+    # call without needing a real Postgres connection or git history.
+    closed = {"n": 0}
+    conn = types.SimpleNamespace(close=lambda: closed.__setitem__("n", closed["n"] + 1))
+    monkeypatch.setattr(post_ingest, "read_records", lambda path: [])
+    monkeypatch.setattr(post_ingest, "build_commit", lambda *a, **k: {
+        "sha": "a" * 40,
+        "timestamp": "2026-01-02T03:04:05+00:00",
+        "message": "msg",
+        "author_name": "A",
+        "author_email": "a@example.com",
+        "committer_name": "A",
+        "committer_email": "a@example.com",
+        "tree_sha": "0" * 40,
+        "url": "https://example.com/commit/" + "a" * 40,
+    })
+    monkeypatch.setattr(post_ingest, "connect_postgres", lambda dsn, region: conn)
+    monkeypatch.setattr(post_ingest, "ingest_postgres", lambda c, commit, records: (0, 0))
+
+    import argparse
+    from pathlib import Path
+    args = argparse.Namespace(
+        jsonl_path=Path("x.jsonl"),
+        commit_sha="a" * 40,
+        repo_url="https://example.com/repo",
+        git_dir=None,
+        postgres="dsn",
+        region=None,
+        timeout=5.0,
+    )
+    rc = post_ingest._main_postgres(args)
+    # A refresh failure must never change the ingest exit code.
+    assert rc == 0
+    assert closed["n"] == 1  # the connection was still closed in the finally block
+
+
+def test_main_postgres_skips_refresh_when_base_url_absent(monkeypatch, tmp_path):
+    """When BENCH_SITE_BASE_URL is unset, refresh_site_cache is never called."""
+    import types
+
+    monkeypatch.delenv("BENCH_SITE_BASE_URL", raising=False)
+    monkeypatch.setenv("BENCH_REVALIDATE_TOKEN", "tok")
+
+    refresh_calls: list[str] = []
+    monkeypatch.setattr(post_ingest, "refresh_site_cache", lambda *a, **k: refresh_calls.append("called"))
+
+    conn = types.SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr(post_ingest, "read_records", lambda path: [])
+    monkeypatch.setattr(post_ingest, "build_commit", lambda *a, **k: {
+        "sha": "b" * 40,
+        "timestamp": "2026-01-02T00:00:00+00:00",
+        "message": "m",
+        "author_name": "B",
+        "author_email": "b@example.com",
+        "committer_name": "B",
+        "committer_email": "b@example.com",
+        "tree_sha": "0" * 40,
+        "url": "https://example.com/commit/" + "b" * 40,
+    })
+    monkeypatch.setattr(post_ingest, "connect_postgres", lambda dsn, region: conn)
+    monkeypatch.setattr(post_ingest, "ingest_postgres", lambda c, commit, records: (0, 0))
+
+    import argparse
+    from pathlib import Path
+    args = argparse.Namespace(
+        jsonl_path=Path("x.jsonl"),
+        commit_sha="b" * 40,
+        repo_url="https://example.com/repo",
+        git_dir=None,
+        postgres="dsn",
+        region=None,
+        timeout=5.0,
+    )
+    rc = post_ingest._main_postgres(args)
+    assert rc == 0
+    assert refresh_calls == [], "refresh_site_cache must not be called when BENCH_SITE_BASE_URL is absent"
+
+
+def test_main_postgres_skips_refresh_when_token_absent(monkeypatch, tmp_path):
+    """When BENCH_REVALIDATE_TOKEN is unset, refresh_site_cache is never called."""
+    import types
+
+    monkeypatch.setenv("BENCH_SITE_BASE_URL", "https://example.test")
+    monkeypatch.delenv("BENCH_REVALIDATE_TOKEN", raising=False)
+
+    refresh_calls: list[str] = []
+    monkeypatch.setattr(post_ingest, "refresh_site_cache", lambda *a, **k: refresh_calls.append("called"))
+
+    conn = types.SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr(post_ingest, "read_records", lambda path: [])
+    monkeypatch.setattr(post_ingest, "build_commit", lambda *a, **k: {
+        "sha": "c" * 40,
+        "timestamp": "2026-01-02T00:00:00+00:00",
+        "message": "m",
+        "author_name": "C",
+        "author_email": "c@example.com",
+        "committer_name": "C",
+        "committer_email": "c@example.com",
+        "tree_sha": "0" * 40,
+        "url": "https://example.com/commit/" + "c" * 40,
+    })
+    monkeypatch.setattr(post_ingest, "connect_postgres", lambda dsn, region: conn)
+    monkeypatch.setattr(post_ingest, "ingest_postgres", lambda c, commit, records: (0, 0))
+
+    import argparse
+    from pathlib import Path
+    args = argparse.Namespace(
+        jsonl_path=Path("x.jsonl"),
+        commit_sha="c" * 40,
+        repo_url="https://example.com/repo",
+        git_dir=None,
+        postgres="dsn",
+        region=None,
+        timeout=5.0,
+    )
+    rc = post_ingest._main_postgres(args)
+    assert rc == 0
+    assert refresh_calls == [], "refresh_site_cache must not be called when BENCH_REVALIDATE_TOKEN is absent"
