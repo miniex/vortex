@@ -8,6 +8,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Chart } from '@/components/Chart';
+import { FETCH_TIMEOUT_MS } from '@/lib/chart-format';
 import { fullHistoryQueue } from '@/lib/chart-store';
 
 // Mock Chart.js construction to a NEVER-RESOLVING loader: maybeConstruct awaits
@@ -354,7 +355,7 @@ describe('Chart opt-in full-history loading', () => {
       await renderOpenGroup();
       expect(signals[0].aborted).toBe(false);
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(30000);
+        await vi.advanceTimersByTimeAsync(FETCH_TIMEOUT_MS);
       });
       expect(signals[0].aborted).toBe(true);
       const err = container.querySelector('.chart-error');
@@ -383,6 +384,78 @@ describe('Chart opt-in full-history loading', () => {
       expect(signals[0].aborted).toBe(true);
       // destroy sets disposed, so the rejected fetch must not paint an error.
       expect(container.querySelector('.chart-error')).toBeNull();
+    });
+
+    // A fetch stub that resolves `?n=100` normally (so the chip appears) but
+    // returns a never-resolving, signal-honoring promise for `?n=all`.
+    // Returns the signals captured per request so the `?n=all` signal can be
+    // asserted.
+    function stubAbortableFullFetch(): { signals: AbortSignal[] } {
+      const signals: AbortSignal[] = [];
+      vi.stubGlobal('fetch', (url: string | URL, init?: { signal?: AbortSignal }) => {
+        const u = String(url);
+        fetchCalls.push(u);
+        if (u.includes('n=all')) {
+          const signal = init?.signal;
+          if (signal) {
+            signals.push(signal);
+          }
+          return new Promise<Response>((_resolve, reject) => {
+            signal?.addEventListener('abort', () => {
+              reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+            });
+          });
+        }
+        // Resolve the `?n=100` window fetch normally so the chip renders.
+        return Promise.resolve(jsonResponse(windowedPayload(3572)));
+      });
+      return { signals };
+    }
+
+    it('destroy aborts an in-flight full-history fetch', async () => {
+      const { signals } = stubAbortableFullFetch();
+      const chip = await renderOpenGroup();
+      // Trigger the `?n=all` fetch via chip click, then flush microtasks so
+      // the fetch promise is created and the signal is captured.
+      await act(async () => {
+        chip?.click();
+        await Promise.resolve();
+      });
+      expect(signals.length).toBeGreaterThanOrEqual(1);
+      expect(signals[0].aborted).toBe(false);
+      // Unmounting destroys the controller; the per-fetch aborter is bridged
+      // from the controller-lifetime aborter so it must fire immediately.
+      await act(async () => {
+        root?.unmount();
+        root = null;
+      });
+      expect(signals[0].aborted).toBe(true);
+    });
+
+    it('a stalled full-history fetch times out and the chip offers retry', async () => {
+      // Use real timers for the initial render so `?n=100` resolves and the
+      // chip appears, then switch to fake timers before the chip click so the
+      // `?n=all` timeout `setTimeout` is fully controlled.
+      const { signals } = stubAbortableFullFetch();
+      const chip = await renderOpenGroup();
+      expect(chip?.dataset.state).toBe('windowed');
+      vi.useFakeTimers();
+      // Click the chip to start the `?n=all` fetch; the 30s timeout is now
+      // governed by fake timers.
+      await act(async () => {
+        chip?.click();
+        await Promise.resolve();
+      });
+      expect(chip?.dataset.state).toBe('loading');
+      // Advance past `FETCH_TIMEOUT_MS`; the timer fires, the per-fetch
+      // controller aborts the fetch, and `chipError` flips to `true`.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(FETCH_TIMEOUT_MS);
+      });
+      expect(signals[0].aborted).toBe(true);
+      expect(chip?.dataset.state).toBe('error');
+      expect(chip?.textContent).toBe('retry');
+      vi.useRealTimers();
     });
   });
 });

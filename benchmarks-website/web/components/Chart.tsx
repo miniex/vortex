@@ -628,6 +628,7 @@ class ChartController {
         }
         this.replaceChartPayload(full as ChartResponse);
         state.fullLoaded = true;
+        state.fullFetchController = null;
         state.chipError = false;
         this.cb.setLoading(false);
         if (!state.chart && this.groupIsOpen()) {
