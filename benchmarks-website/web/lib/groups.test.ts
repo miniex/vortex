@@ -1,7 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright the Vortex contributors
 
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// The route handlers route the default window through `unstable_cache`
+// (`lib/data-cache.ts`), which needs Next's request/build `incrementalCache`
+// context that plain vitest does not provide. These tests verify the route plus
+// query behavior against the real testcontainer, not the cache layer (covered by
+// `lib/data-cache.test.ts`), so make the cache wrapper a transparent pass-through.
+vi.mock('next/cache', () => ({
+  unstable_cache: (fn: (...args: unknown[]) => unknown) => fn,
+  revalidateTag: () => {},
+}));
+
 import type { StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import {
   collectGroupCharts,
