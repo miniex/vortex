@@ -5,7 +5,7 @@ import { Footer } from '@/components/Footer';
 import { GroupSection } from '@/components/GroupSection';
 import { Header } from '@/components/Header';
 import { parseFilterCsv, singleSearchParam } from '@/lib/chart-format';
-import { collectFilterUniverse, collectGroups } from '@/lib/queries';
+import { cachedFilterUniverse, cachedGroups } from '@/lib/data-cache';
 
 // Rendered per request, with CDN caching layered on by `vercel.json`: each
 // render reads every group from Postgres via `collectGroups()`, and Vercel's
@@ -40,7 +40,7 @@ export default async function Home({
   const initialEngines = parseFilterCsv(singleSearchParam(params.engine));
   const initialFormats = parseFilterCsv(singleSearchParam(params.format));
 
-  const [groups, universe] = await Promise.all([collectGroups(), collectFilterUniverse()]);
+  const [groups, universe] = await Promise.all([cachedGroups(), cachedFilterUniverse()]);
   let nextIndex = 0;
   return (
     <>
