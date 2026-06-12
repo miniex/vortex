@@ -560,6 +560,92 @@ describe('PR-5.0.97 group-bundle hydration', () => {
     ]);
   });
 
+  it('closing a group while a card awaits the bundle issues NO per-chart fetch', async () => {
+    // The bundle resolves only AFTER the group has closed, and it does NOT cover
+    // this slug. Without the `!this.groupIsOpen()` guard in `ensureInitialPayload`,
+    // the bundle `.then` would fire post-close and fall back to a per-chart
+    // `/api/chart/` fetch that the already-run close abort can no longer cancel.
+    let resolveBundle: (() => void) | null = null;
+    vi.stubGlobal('fetch', (url: string | URL) => {
+      fetchCalls.push(String(url));
+      if (String(url).includes('/api/group/')) {
+        return new Promise<Response>((resolve) => {
+          // The bundle is empty (covers no slug), so a fall-through would refetch.
+          resolveBundle = () => resolve(bundleResponse([]));
+        });
+      }
+      return Promise.resolve(jsonResponse(windowedPayload(3572)));
+    });
+    await renderGroup(1);
+    // Fire the card's observer so it calls `ensureInitialPayload` and begins
+    // awaiting the still-pending bundle.
+    await act(async () => {
+      MockIO.instances[0].fire(true);
+      await Promise.resolve();
+    });
+    expect(bundleFetchCount()).toBe(1);
+    expect(chartFetchCount()).toBe(0);
+
+    // Close the group: this aborts the in-flight bundle and per-chart fetches.
+    const details = container.querySelector('details.group-disclosure') as HTMLDetailsElement;
+    await act(async () => {
+      details.open = false;
+      details.dispatchEvent(new Event('toggle'));
+      await Promise.resolve();
+    });
+
+    // Settle the bundle (an aborted fetch would normally reject, but resolving it
+    // here exercises the worst case: the `.then` fires after the close abort ran).
+    await act(async () => {
+      resolveBundle?.();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // The guard must have suppressed the per-chart fallback for the closed group.
+    const chartCalls = fetchCalls.filter((u) => u.includes('/api/chart/'));
+    expect(chartCalls.length).toBe(0);
+  });
+
+  it('reopen after a bundle 404 re-issues the group bundle fetch', async () => {
+    // A 404 leaves `completedBundles` unset; `abortGroupBundle` (on close) clears
+    // `attemptedBundles`, so a reopen must re-attempt the bundle rather than
+    // short-circuit. This pins that re-attempt behavior.
+    vi.stubGlobal('fetch', (url: string | URL) => {
+      fetchCalls.push(String(url));
+      if (String(url).includes('/api/group/')) {
+        return Promise.resolve({ ok: false, status: 404 } as unknown as Response);
+      }
+      return Promise.resolve(jsonResponse(windowedPayload(3572)));
+    });
+    await renderGroup(2);
+    // Let the eager bundle fetch settle as a 404, then let each island fall back.
+    await act(async () => {
+      MockIO.instances[0].fire(true);
+      MockIO.instances[1].fire(true);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(bundleFetchCount()).toBe(1);
+
+    const details = container.querySelector('details.group-disclosure') as HTMLDetailsElement;
+    await act(async () => {
+      details.open = false;
+      details.dispatchEvent(new Event('toggle'));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      details.open = true;
+      details.dispatchEvent(new Event('toggle'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    // The reopen re-attempts the bundle because the 404 never marked it complete.
+    expect(bundleFetchCount()).toBe(2);
+  });
+
   it('two groups opened together respect BUNDLE_CONCURRENCY and top-group priority', async () => {
     const scheduleSpy = vi.spyOn(bundleQueue, 'schedule');
     vi.stubGlobal('fetch', (url: string | URL) => {

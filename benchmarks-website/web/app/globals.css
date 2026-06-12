@@ -1200,6 +1200,11 @@ main > .chart-card:not(.chart-grid .chart-card) .chart-wrap {
   height: 1.4rem;
   border-width: 3px;
 }
+/* The placeholder's "loading…" label, sized to match the chip/loading text. */
+.chart-placeholder-text {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
 .chart-spinner {
   display: inline-block;
   width: 0.7rem;

@@ -29,6 +29,10 @@ describe('PR-5.0.97 chart-placeholder CSS', () => {
     expect(css).toMatch(/\.chart-placeholder\b/);
   });
 
+  it('styles the .chart-placeholder-text label', () => {
+    expect(css).toMatch(/\.chart-placeholder-text\s*\{[^}]*\}/);
+  });
+
   it('includes .chart-placeholder .chart-spinner in the prefers-reduced-motion block', () => {
     const reduced = css.match(
       /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{(?:[^{}]|\{[^{}]*\})*\}/g,

@@ -125,8 +125,9 @@ export function getCachedPayload(slug: string): ChartResponse | undefined {
   return payloadCache.get(slug);
 }
 
-/** Seed the cache for one chart slug (idempotent; last write wins). */
-export function primePayload(slug: string, payload: ChartResponse): void {
+/** Seed the cache for one chart slug (idempotent; last write wins). Internal to
+ * the store; `ensureGroupBundle` is its only caller. */
+function primePayload(slug: string, payload: ChartResponse): void {
   payloadCache.set(slug, payload);
 }
 

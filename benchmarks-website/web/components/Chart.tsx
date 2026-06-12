@@ -478,7 +478,12 @@ class ChartController {
       }
       const groupSlug = this.groupSlug;
       return ensureGroupBundle(groupSlug, priority).then(() => {
-        if (state.disposed || state.payload) {
+        // The group can close while this card awaits the in-flight bundle. The
+        // close runs `abortInFlightFetches` + `abortGroupBundle` already, so a
+        // per-chart fallback issued now would never be aborted and would defeat
+        // the "closing a group frees server capacity" contract. Bail when the
+        // group is no longer open.
+        if (state.disposed || state.payload || !this.groupIsOpen()) {
           return;
         }
         const fromBundle = getCachedPayload(this.slug);
@@ -1929,6 +1934,11 @@ export function Chart({ slug, name, index, groupSlug, initialPayload }: ChartIsl
       if (controllerRef.current === controller) {
         controllerRef.current = null;
       }
+      // Re-show the placeholder on the next mount. `constructed` latches true
+      // once a chart builds but is never otherwise reset, so a StrictMode dev
+      // remount (or any re-mount) would briefly suppress the placeholder until
+      // the fresh controller reconstructs.
+      setConstructed(false);
     };
     // The island's identity props never change after mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
