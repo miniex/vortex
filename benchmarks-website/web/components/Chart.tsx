@@ -473,6 +473,15 @@ class ChartController {
         if (state.disposed) {
           return;
         }
+        // A concurrent full-history upgrade (hover dwell or chip click) may have
+        // already resolved and constructed from the `?n=all` payload while this
+        // `?n=100` window was still in flight. The late window resolution must
+        // not clobber that full payload back to the bounded window (which would
+        // diverge `payload` from the rendered datasets, regress the chip, and
+        // re-arm a redundant pan-triggered refetch).
+        if (state.fullLoaded) {
+          return;
+        }
         const normalized = normalizeChartPayload(raw as ChartResponse);
         state.payload = normalized;
         state.fullLoaded = normalized.history.complete;
@@ -522,7 +531,11 @@ class ChartController {
    */
   ensureFullHistory(priority: number): Promise<void> {
     const state = this.state;
-    if (state.fullLoaded || state.disposed) {
+    // `fullUnavailable` is checked here (not only at the chip/hover call sites)
+    // so every intent path shares one terminal-404 guard, including the pan/zoom
+    // `rangeTouchesUnloadedHistory` promotion, which must not re-issue a fetch
+    // that already 404'd.
+    if (state.fullLoaded || state.fullUnavailable || state.disposed) {
       return Promise.resolve();
     }
     if (state.fullFetchEntry) {
@@ -1010,8 +1023,11 @@ class ChartController {
       chip.removeAttribute('title');
       return;
     }
-    const total = payload.history.total_commits.toLocaleString();
-    const loaded = payload.history.loaded_commits.toLocaleString();
+    // Pin the locale so the grouped digits ("3,572") are deterministic across
+    // runtimes and CI ICU builds (and match the test expectations) rather than
+    // following the host's default locale.
+    const total = payload.history.total_commits.toLocaleString('en-US');
+    const loaded = payload.history.loaded_commits.toLocaleString('en-US');
     chip.removeAttribute('hidden');
     if (state.fullLoaded) {
       chip.dataset.state = 'complete';
@@ -1090,6 +1106,9 @@ class ChartController {
   /** Pointer left the card: restore the chip label and cancel a pending dwell. */
   onCardHoverEnd(): void {
     const state = this.state;
+    if (state.disposed) {
+      return;
+    }
     state.hovering = false;
     if (state.hoverDwellTimer !== null) {
       clearTimeout(state.hoverDwellTimer);

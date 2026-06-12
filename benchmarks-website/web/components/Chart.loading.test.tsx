@@ -269,4 +269,53 @@ describe('Chart opt-in full-history loading', () => {
     card.dispatchEvent(new Event('pointerleave'));
     expect(chip?.textContent).toBe('latest 100 of 3,572');
   });
+
+  it('a full-history upgrade that lands before the pending initial fetch is not clobbered', async () => {
+    // Park the initial `?n=100` so it stays in flight while the dwell-triggered
+    // `?n=all` upgrade resolves first. The full payload is born complete, so the
+    // chip is hidden (no windowed state was ever observed). The late `?n=100`
+    // resolution must NOT clobber that full payload: with the resolver guard it
+    // stays hidden/complete; without it the late window flips the chart back to
+    // the bounded window and re-reveals the chip as 'windowed' — the regression.
+    let resolveWindow: (r: Response) => void = () => {};
+    responders.push({
+      match: (u) => u.includes('n=100'),
+      respond: () =>
+        new Promise<Response>((res) => {
+          resolveWindow = res;
+        }),
+    });
+    responders.push({
+      match: (u) => u.includes('n=all'),
+      respond: () => Promise.resolve(jsonResponse(completePayload(3572))),
+    });
+    // The parked `?n=100` leaves the chip hidden (no payload yet).
+    const chip = await renderOpenGroup();
+    const card = container.querySelector('.chart-card') as HTMLElement;
+    vi.useFakeTimers();
+    card.dispatchEvent(new Event('pointerenter'));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(601);
+    });
+    vi.useRealTimers();
+    // The `?n=all` upgrade drains through the full-history queue across several
+    // microtask hops (queue drain, fetch, json, replaceChartPayload); flush
+    // generously so it lands before the still-parked `?n=100`.
+    await act(async () => {
+      for (let i = 0; i < 10; i += 1) {
+        await Promise.resolve();
+      }
+    });
+    // The full payload loaded; born complete, its chip is hidden.
+    expect(chip?.hasAttribute('hidden')).toBe(true);
+    // Now the late initial `?n=100` resolves; the resolver must early-return on
+    // `fullLoaded` and leave the full payload (and the hidden chip) intact.
+    await act(async () => {
+      resolveWindow(jsonResponse(windowedPayload(3572)));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(chip?.hasAttribute('hidden')).toBe(true);
+    expect(chip?.dataset.state).not.toBe('windowed');
+  });
 });
