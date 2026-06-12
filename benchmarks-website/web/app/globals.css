@@ -1193,7 +1193,6 @@ main > .chart-card:not(.chart-grid .chart-card) .chart-wrap {
   border: 1px solid currentColor;
   border-radius: 4px;
   padding: 0 0.35rem;
-  text-decoration: underline;
 }
 
 /* ----------------------------------------------------------------------

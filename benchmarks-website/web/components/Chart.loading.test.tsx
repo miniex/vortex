@@ -460,6 +460,9 @@ describe('Chart opt-in full-history loading', () => {
   });
 
   describe('PR-5.0.95 initial-fetch retry', () => {
+    // Overrides the `beforeEach` default `fetch` stub so the `?n=100` fetch can
+    // be rejected on demand; `afterEach`'s `vi.unstubAllGlobals()` still cleans
+    // both up.
     function stubControllableWindowFetch(): {
       rejectNext: (e: unknown) => void;
       calls: () => number;

@@ -558,7 +558,8 @@ class ChartController {
 
   /** Re-issue the initial `?n=100` fetch after a failure/timeout. User-initiated
    * (the error region's retry control), so it is naturally bounded; clears the
-   * error first and schedules at the top of the hydration queue. */
+   * error first and schedules at the top of the hydration queue.
+   */
   retryInitialPayload(): void {
     if (this.state.disposed || this.state.payload) {
       return;
