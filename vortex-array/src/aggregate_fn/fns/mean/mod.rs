@@ -6,6 +6,7 @@ use vortex_error::vortex_bail;
 
 use crate::ArrayRef;
 use crate::ExecutionCtx;
+use crate::IntoArray;
 use crate::aggregate_fn::Accumulator;
 use crate::aggregate_fn::AggregateFnId;
 use crate::aggregate_fn::AggregateFnVTable;
@@ -17,6 +18,7 @@ use crate::aggregate_fn::combined::CombinedOptions;
 use crate::aggregate_fn::combined::PairOptions;
 use crate::aggregate_fn::fns::count::Count;
 use crate::aggregate_fn::fns::sum::Sum;
+use crate::arrays::ConstantArray;
 use crate::builtins::ArrayBuiltins;
 use crate::dtype::DType;
 use crate::dtype::Nullability;
@@ -89,7 +91,15 @@ impl BinaryCombined for Mean {
         };
         let sum_cast = sum.cast(target.clone())?;
         let count_cast = count.cast(target)?;
-        sum_cast.binary(count_cast, Operator::Div)
+        let mean = sum_cast.binary(count_cast, Operator::Div)?;
+        // Nulls are skipped during accumulation, so an all-null group has a count of zero and
+        // the division produces 0/0 = NaN. The mean of an empty group is null (as in SQL), so
+        // mask out zero-count entries. This matches `finalize_scalar`.
+        let non_empty = count.binary(
+            ConstantArray::new(0u64, count.len()).into_array(),
+            Operator::NotEq,
+        )?;
+        mean.mask(non_empty)
     }
 
     fn finalize_scalar(&self, left_scalar: Scalar, right_scalar: Scalar) -> VortexResult<Scalar> {
@@ -162,12 +172,13 @@ mod tests {
     use vortex_error::VortexResult;
 
     use super::*;
-    use crate::IntoArray;
     use crate::LEGACY_SESSION;
     use crate::VortexSessionExecute;
+    use crate::aggregate_fn::DynGroupedAccumulator;
+    use crate::aggregate_fn::GroupedAccumulator;
     use crate::arrays::BoolArray;
     use crate::arrays::ChunkedArray;
-    use crate::arrays::ConstantArray;
+    use crate::arrays::FixedSizeListArray;
     use crate::arrays::PrimitiveArray;
     use crate::validity::Validity;
 
@@ -235,6 +246,79 @@ mod tests {
         let mut ctx = LEGACY_SESSION.create_execution_ctx();
         let result = mean(&array, &mut ctx)?;
         assert_eq!(result.as_primitive().as_::<f64>(), None);
+        Ok(())
+    }
+
+    /// Group inputs and expected means, exercised identically through the scalar-partial path
+    /// (`finalize_scalar`) and the grouped array path (`finalize`).
+    ///
+    /// Note that `Sum` skips NaN values while `Count` counts them as valid, so NaN elements
+    /// reduce the mean rather than poisoning it, e.g. `mean(NaN, 1, null) = 1/2`.
+    fn mean_cases() -> Vec<(Vec<Option<f64>>, Option<f64>)> {
+        vec![
+            (vec![Some(f64::NAN), Some(1.0), None], Some(0.5)),
+            (vec![Some(f64::NAN), Some(1.0), Some(1.0)], Some(2.0 / 3.0)),
+            (vec![None, None, Some(f64::NAN)], Some(0.0)),
+            (vec![Some(f64::NAN), Some(1.0), Some(1.0)], Some(2.0 / 3.0)),
+            (vec![None, None, None], None),
+            (vec![Some(1.0), Some(2.0), Some(3.0)], Some(2.0)),
+        ]
+    }
+
+    fn assert_mean(actual: Option<f64>, expected: Option<f64>, case: usize) {
+        match expected {
+            Some(e) if e.is_nan() => assert!(
+                actual.is_some_and(f64::is_nan),
+                "case {case}: expected NaN, got {actual:?}"
+            ),
+            _ => assert_eq!(actual, expected, "case {case}"),
+        }
+    }
+
+    #[test]
+    fn mean_via_combined_partials() -> VortexResult<()> {
+        let mut ctx = LEGACY_SESSION.create_execution_ctx();
+        for (case, (group, expected)) in mean_cases().into_iter().enumerate() {
+            let mut acc = Accumulator::try_new(
+                Mean::combined(),
+                PairOptions(EmptyOptions, EmptyOptions),
+                DType::Primitive(PType::F64, Nullability::Nullable),
+            )?;
+            // Two batches per group so the result goes through partial combination and
+            // `finalize_scalar`.
+            let (head, tail) = group.split_at(2);
+            let head = PrimitiveArray::from_option_iter(head.iter().copied()).into_array();
+            let tail = PrimitiveArray::from_option_iter(tail.iter().copied()).into_array();
+            acc.accumulate(&head, &mut ctx)?;
+            acc.accumulate(&tail, &mut ctx)?;
+            let result = acc.finish()?;
+            assert_mean(result.as_primitive().as_::<f64>(), expected, case);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn mean_via_grouped_finalize() -> VortexResult<()> {
+        let cases = mean_cases();
+        let elements = PrimitiveArray::from_option_iter(
+            cases.iter().flat_map(|(group, _)| group.iter().copied()),
+        )
+        .into_array();
+        let groups = FixedSizeListArray::try_new(elements, 3, Validity::NonNullable, cases.len())?;
+
+        let mut acc = GroupedAccumulator::try_new(
+            Mean::combined(),
+            PairOptions(EmptyOptions, EmptyOptions),
+            DType::Primitive(PType::F64, Nullability::Nullable),
+        )?;
+        let mut ctx = LEGACY_SESSION.create_execution_ctx();
+        acc.accumulate_list(&groups.into_array(), &mut ctx)?;
+        let result = acc.finish()?;
+
+        for (case, (_, expected)) in cases.into_iter().enumerate() {
+            let actual = result.execute_scalar(case, &mut ctx)?;
+            assert_mean(actual.as_primitive().as_::<f64>(), expected, case);
+        }
         Ok(())
     }
 
